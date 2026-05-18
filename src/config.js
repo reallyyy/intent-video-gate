@@ -25,7 +25,9 @@ export const defaultConfig = {
     maxCollected: 80,
     feedSize: 20,
     youtubeCookieBrowser: "chromium:/home/camel/snap/chromium/common/chromium",
-    youtubeRecommendationUrl: "https://www.youtube.com/feed/recommended"
+    youtubeRecommendationUrl: "https://www.youtube.com/feed/recommended",
+    bilibiliCookieBrowser: "chromium:/home/camel/snap/chromium/common/chromium",
+    bilibiliRecommendationUrl: "https://www.bilibili.com/v/popular/all"
   },
   blockKeywords: ["warhammer", "战锤", "星际道士", "道士", "sora", "B站AI创作大赛"],
   policy: {

@@ -30,14 +30,13 @@ export async function searchVideos(platform, query, limit, config) {
 
 export async function youtubeRecommendations(config, limit = 24) {
   const args = [
-    "--cookies-from-browser",
-    config.suggestions.youtubeCookieBrowser,
     "--flat-playlist",
     "--dump-json",
     "--playlist-end",
     String(limit),
     config.suggestions.youtubeRecommendationUrl
   ];
+  if (config.suggestions.youtubeCookieBrowser) args.unshift("--cookies-from-browser", config.suggestions.youtubeCookieBrowser);
   const result = await run(config.tools.ytdlp, args, {
     timeoutMs: 70000,
     maxBuffer: 24 * 1024 * 1024
@@ -48,6 +47,28 @@ export async function youtubeRecommendations(config, limit = 24) {
     .filter(Boolean)
     .map((line) => normalizeYtdlpJson(line, "youtube"))
     .filter((item) => item.url.includes("youtube.com/watch"))
+    .slice(0, limit);
+}
+
+export async function bilibiliRecommendations(config, limit = 24) {
+  const args = [
+    "--flat-playlist",
+    "--dump-json",
+    "--playlist-end",
+    String(limit),
+    config.suggestions.bilibiliRecommendationUrl
+  ];
+  if (config.suggestions.bilibiliCookieBrowser) args.unshift("--cookies-from-browser", config.suggestions.bilibiliCookieBrowser);
+  const result = await run(config.tools.ytdlp, args, {
+    timeoutMs: 70000,
+    maxBuffer: 24 * 1024 * 1024
+  });
+  if (!result.ok) throw new Error(result.stderr || result.error || "yt-dlp Bilibili recommendation extraction failed");
+  return result.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => normalizeYtdlpJson(line, "bilibili"))
+    .filter((item) => item.url.includes("bilibili.com/video/"))
     .slice(0, limit);
 }
 

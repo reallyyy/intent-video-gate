@@ -8,7 +8,7 @@ import { createGrant, hasGrant } from "./grants.js";
 import { commandExists } from "./process.js";
 import { classifyBrowserNavigation, parseVideoUrl } from "./rules.js";
 import { appendHistory, readAuthState, readBlockKeywords, readCachedFeed, readCachedSuggestions, readFilter, writeAuthState, writeCachedFeed, writeCachedSuggestions, writeFilter } from "./store.js";
-import { metadataForUrl, youtubeRecommendations } from "./video.js";
+import { bilibiliRecommendations, metadataForUrl, youtubeRecommendations } from "./video.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const publicDir = join(root, "public");
@@ -76,7 +76,7 @@ export function createApp(config) {
         const cached = refresh ? [] : await readCachedFeed();
         const result = cached.length
           ? { items: cached, diagnostics: cachedFeedDiagnostics(cached) }
-          : await approvedFeedResult(config);
+          : await approvedFeedResult(config, { refresh });
         const items = result.items.map(publicCachedVideo);
         feedItems.clear();
         for (const item of items) feedItems.set(item.id, item);
@@ -137,17 +137,18 @@ export async function approvedFeed(config) {
   return (await approvedFeedResult(config)).items;
 }
 
-export async function approvedFeedResult(config) {
+export async function approvedFeedResult(config, options = {}) {
   const filter = await readFilter();
   if (!filter) return { items: [], diagnostics: emptyDiagnostics() };
 
-  const [youtube, cached] = await Promise.allSettled([
+  const refresh = Boolean(options.refresh);
+  const [youtube, bilibili] = await Promise.allSettled([
     youtubeRecommendations(config, config.suggestions.maxCollected),
-    readCachedSuggestions()
+    refresh ? bilibiliRecommendations(config, config.suggestions.maxCollected) : readCachedSuggestions()
   ]);
-  const cachedBilibili = cached.status === "fulfilled" ? cached.value.filter(isCollectedBilibiliItem) : [];
+  const bilibiliItems = bilibili.status === "fulfilled" ? bilibili.value.filter(isCollectedBilibiliItem) : [];
   const candidates = selectFeedCandidates({
-    cachedBilibili,
+    cachedBilibili: bilibiliItems,
     youtubeItems: youtube.status === "fulfilled" ? youtube.value : [],
     limit: config.suggestions.maxCollected
   });
@@ -158,7 +159,18 @@ export async function approvedFeedResult(config) {
   const approved = gated.filter((item) => item.gate?.decision === "allow");
   const hydrated = await hydrateMissingThumbnails(mixedPlatforms(approved, config.suggestions.feedSize), config);
   const feed = hydrated.map(publicVideo);
-  const diagnostics = buildFeedDiagnostics({ candidates, keywordBlocked: prefiltered.blocked, gated, approved: hydrated });
+  const diagnostics = buildFeedDiagnostics({
+    candidates,
+    keywordBlocked: prefiltered.blocked,
+    gated,
+    approved: hydrated,
+    sources: {
+      refresh,
+      youtube: settledSourceStatus(youtube),
+      bilibili: settledSourceStatus(bilibili)
+    }
+  });
+  if (refresh && bilibili.status === "fulfilled") await writeCachedSuggestions(bilibiliItems);
   await writeCachedFeed(feed);
   return { items: feed, diagnostics };
 }
@@ -319,13 +331,14 @@ function normalizeText(value) {
   return String(value || "").toLocaleLowerCase().normalize("NFKC");
 }
 
-function buildFeedDiagnostics({ candidates = [], keywordBlocked = [], gated = [], approved = [] }) {
+function buildFeedDiagnostics({ candidates = [], keywordBlocked = [], gated = [], approved = [], sources }) {
   return {
     candidatesByPlatform: countBy(candidates, (item) => item.platform),
     keywordBlockedByPlatform: countBy(keywordBlocked, (item) => item.platform),
     decisions: countBy(gated, (item) => item.gate?.decision || "missing"),
     approvedByPlatform: countBy(approved, (item) => item.platform),
-    keywordMatches: countBy(keywordBlocked, (item) => item.gate?.keyword || "unknown")
+    keywordMatches: countBy(keywordBlocked, (item) => item.gate?.keyword || "unknown"),
+    ...(sources ? { sources } : {})
   };
 }
 
@@ -354,6 +367,11 @@ function countBy(items, getKey) {
     counts[key] = (counts[key] || 0) + 1;
   }
   return counts;
+}
+
+function settledSourceStatus(result) {
+  if (result.status === "fulfilled") return { ok: true, count: Array.isArray(result.value) ? result.value.length : 0 };
+  return { ok: false, error: result.reason?.message || String(result.reason || "source failed") };
 }
 
 function mergeByUrl(items) {

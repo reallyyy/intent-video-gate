@@ -131,13 +131,13 @@ export async function setupRefreshE2E() {
     ],
     suggestions: [
       {
-        id: "bilibili:e2e-refresh",
+        id: "bilibili:e2e-stale",
         platform: "bilibili",
-        title: "Bilibili refreshed E2E video",
-        uploader: "Bilibili",
-        durationSeconds: 465,
-        thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
-        url: "https://www.bilibili.com/video/BV11mFLziEyP"
+        title: "Stale Bilibili cached suggestion",
+        uploader: "Cache",
+        durationSeconds: 61,
+        thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-stale.jpg",
+        url: "https://www.bilibili.com/video/BV1stale"
       }
     ]
   });
@@ -264,6 +264,7 @@ process.stdout.write(JSON.stringify({ response: JSON.stringify({ decisions }) })
 `, "utf8");
   await writeFile(ytdlp, `#!/usr/bin/env node
 const args = process.argv.slice(2);
+const target = args[args.length - 1] || "";
 const youtubeItems = [
   {
     id: "yt-refresh-1",
@@ -282,20 +283,23 @@ const youtubeItems = [
     webpage_url: "https://www.youtube.com/watch?v=yt-refresh-2"
   }
 ];
+const bilibiliItems = [
+  {
+    id: "BV11mFLziEyP",
+    title: "Bilibili refreshed E2E video",
+    uploader: "Bilibili",
+    duration: 465,
+    thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
+    webpage_url: "https://www.bilibili.com/video/BV11mFLziEyP"
+  }
+];
 if (args.includes("--flat-playlist")) {
-  process.stdout.write(youtubeItems.map((item) => JSON.stringify(item)).join("\\n") + "\\n");
+  const items = target.includes("bilibili.com") ? bilibiliItems : youtubeItems;
+  process.stdout.write(items.map((item) => JSON.stringify(item)).join("\\n") + "\\n");
   process.exit(0);
 }
-const target = args[args.length - 1] || "";
 const item = target.includes("bilibili.com")
-  ? {
-      id: "BV11mFLziEyP",
-      title: "Bilibili refreshed E2E video",
-      uploader: "Bilibili",
-      duration: 465,
-      thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
-      webpage_url: "https://www.bilibili.com/video/BV11mFLziEyP"
-    }
+  ? bilibiliItems[0]
   : youtubeItems[0];
 process.stdout.write(JSON.stringify(item) + "\\n");
 `, "utf8");
