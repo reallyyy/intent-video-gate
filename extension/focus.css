@@ -1,0 +1,259 @@
+[data-intent-video-hidden="true"] {
+  display: none !important;
+}
+
+#intent-video-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2147483647;
+  font: 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#intent-video-panel a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: #176b68;
+  color: white;
+  text-decoration: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+.intent-youtube-watch,
+.intent-bilibili-watch {
+  --intent-video-stage-width: 100vw;
+  --intent-video-stage-height: 100dvh;
+}
+
+.intent-bilibili-watch {
+  overflow: hidden !important;
+}
+
+.intent-youtube-watch {
+  overflow: hidden !important;
+}
+
+.intent-youtube-watch #intent-video-panel,
+.intent-bilibili-watch #intent-video-panel {
+  left: 12px;
+  top: 12px;
+  right: auto;
+  bottom: auto;
+}
+
+.intent-youtube-watch body,
+.intent-bilibili-watch body {
+  background: #000 !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+.intent-youtube-watch,
+.intent-youtube-watch body,
+.intent-youtube-watch ytd-app,
+.intent-youtube-watch #content,
+.intent-bilibili-watch,
+.intent-bilibili-watch body,
+.intent-bilibili-watch #app {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+}
+
+.intent-youtube-watch #masthead,
+.intent-youtube-watch ytd-masthead,
+.intent-youtube-watch #secondary,
+.intent-youtube-watch #comments,
+.intent-youtube-watch ytd-watch-next-secondary-results-renderer,
+.intent-youtube-watch ytd-merch-shelf-renderer,
+.intent-youtube-watch ytd-reel-shelf-renderer,
+.intent-youtube-watch ytd-rich-section-renderer {
+  display: none !important;
+}
+
+.intent-bilibili-watch .bili-header,
+.intent-bilibili-watch [class*="bili-header"],
+.intent-bilibili-watch [class*="BiliHeader"],
+.intent-bilibili-watch .international-header,
+.intent-bilibili-watch .mini-header,
+.intent-bilibili-watch [class*="left-entry"],
+.intent-bilibili-watch [class*="center-search"],
+.intent-bilibili-watch [class*="right-entry"],
+.intent-bilibili-watch [class*="nav-search"],
+.intent-bilibili-watch [class*="upload"] {
+  display: none !important;
+}
+
+.intent-bilibili-watch #viewbox_report,
+.intent-bilibili-watch .video-info-container,
+.intent-bilibili-watch [class*="video-info"],
+.intent-bilibili-watch [class*="VideoInfo"],
+.intent-bilibili-watch .video-desc-container,
+.intent-bilibili-watch [class*="video-desc"],
+.intent-bilibili-watch [class*="VideoDesc"],
+.intent-bilibili-watch .desc-info,
+.intent-bilibili-watch [class*="desc-info"],
+.intent-bilibili-watch .up-panel-container,
+.intent-bilibili-watch [class*="up-panel"],
+.intent-bilibili-watch .members-info-container,
+.intent-bilibili-watch .left-container-under-player,
+.intent-bilibili-watch [class*="left-container-under-player"],
+.intent-bilibili-watch .reply-warp,
+.intent-bilibili-watch .reply-wrap,
+.intent-bilibili-watch .reply-container,
+.intent-bilibili-watch [class*="reply"],
+.intent-bilibili-watch [class*="Reply"],
+.intent-bilibili-watch .comment,
+.intent-bilibili-watch .comment-container,
+.intent-bilibili-watch #comment,
+.intent-bilibili-watch [class*="comment"],
+.intent-bilibili-watch [class*="Comment"],
+.intent-bilibili-watch .tag-panel,
+.intent-bilibili-watch .video-tag-container,
+.intent-bilibili-watch [class*="tag-panel"] {
+  display: none !important;
+}
+
+.intent-bilibili-watch #app {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+.intent-youtube-watch ytd-watch-flexy,
+.intent-youtube-watch #columns,
+.intent-youtube-watch #primary,
+.intent-youtube-watch #primary-inner,
+.intent-youtube-watch #player,
+.intent-youtube-watch ytd-player,
+.intent-youtube-watch [data-intent-video-root="true"],
+.intent-youtube-watch [data-intent-video-focus="true"],
+.intent-bilibili-watch .video-container-v1,
+.intent-bilibili-watch .video-container,
+.intent-bilibili-watch .left-container,
+.intent-bilibili-watch .player-wrap,
+.intent-bilibili-watch [data-intent-video-root="true"],
+.intent-bilibili-watch [data-intent-video-focus="true"] {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.intent-youtube-watch [data-intent-video-root="true"],
+.intent-youtube-watch [data-intent-video-focus="true"],
+.intent-bilibili-watch [data-intent-video-root="true"],
+.intent-bilibili-watch [data-intent-video-focus="true"] {
+  height: 100dvh !important;
+  min-height: 100dvh !important;
+  max-height: 100dvh !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+.intent-youtube-watch #columns,
+.intent-youtube-watch #primary,
+.intent-youtube-watch #primary-inner {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.intent-bilibili-watch .left-container,
+.intent-bilibili-watch .video-container-v1,
+.intent-bilibili-watch .video-container {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.intent-youtube-watch #movie_player,
+.intent-youtube-watch .html5-video-player,
+.intent-bilibili-watch .bpx-player-container,
+.intent-bilibili-watch #bilibili-player,
+.intent-youtube-watch [data-intent-video-stage="true"],
+.intent-bilibili-watch [data-intent-video-stage="true"] {
+  width: var(--intent-video-stage-width) !important;
+  max-width: var(--intent-video-stage-width) !important;
+  height: var(--intent-video-stage-height) !important;
+  min-height: var(--intent-video-stage-height) !important;
+  max-height: var(--intent-video-stage-height) !important;
+  margin: 0 auto !important;
+}
+
+.intent-youtube-watch #movie_player,
+.intent-youtube-watch .html5-video-player {
+  position: fixed !important;
+  inset: 0 !important;
+  transform: none !important;
+  z-index: 2147483645 !important;
+}
+
+.intent-youtube-watch .html5-main-video,
+.intent-youtube-watch video,
+.intent-bilibili-watch video {
+  top: 0 !important;
+  left: 0 !important;
+  object-fit: contain !important;
+}
+
+.intent-bilibili-watch .bpx-player-container {
+  position: fixed !important;
+  inset: 0 !important;
+  transform: none !important;
+}
+
+.intent-youtube-watch [data-intent-video-focus="true"],
+.intent-bilibili-watch [data-intent-video-focus="true"] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483645 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  transform: none !important;
+  background: #000 !important;
+}
+
+.intent-youtube-watch [data-intent-video-focus="true"] > *,
+.intent-bilibili-watch [data-intent-video-focus="true"] > * {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+}
+
+.intent-youtube-watch [data-intent-video-player="true"],
+.intent-youtube-watch [data-intent-video-player="true"] .html5-video-container,
+.intent-youtube-watch [data-intent-video-player="true"] .html5-main-video,
+.intent-youtube-watch [data-intent-video-player="true"] video,
+.intent-bilibili-watch [data-intent-video-player="true"],
+.intent-bilibili-watch [data-intent-video-player="true"] .bpx-player-container,
+.intent-bilibili-watch [data-intent-video-player="true"] .bpx-player-primary-area,
+.intent-bilibili-watch [data-intent-video-player="true"] .bpx-player-video-area,
+.intent-bilibili-watch [data-intent-video-player="true"] .bpx-player-video-wrap {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+.intent-bilibili-watch .bpx-player-control-wrap {
+  display: block !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: auto !important;
+}
+
+.intent-bilibili-watch .bpx-player-control-entity {
+  display: block !important;
+  width: 100% !important;
+}
+
+.intent-bilibili-watch .bpx-player-control-bottom {
+  opacity: 1 !important;
+}

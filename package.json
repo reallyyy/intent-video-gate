@@ -1,0 +1,17 @@
+{
+  "name": "intent-video-gate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "intent-video": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js serve",
+    "doctor": "node src/index.js doctor",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

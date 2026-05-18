@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Filter</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="bar">
+        <input id="filter" autocomplete="off" placeholder="What do you want to watch?">
+        <nav class="login-actions" aria-label="Platform login">
+          <button id="loginYoutube" type="button" class="secondary">YouTube login</button>
+          <button id="loginBilibili" type="button" class="secondary">Bilibili login</button>
+        </nav>
+        <div class="prompt-actions">
+          <button id="refresh" type="button" class="secondary">Refresh</button>
+          <button id="apply" type="button">Apply & Refresh</button>
+        </div>
+      </header>
+      <section id="player" class="player" hidden>
+        <iframe id="playerFrame" title="Video player" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+      </section>
+      <section id="feed" class="feed" aria-live="polite"></section>
+      <p id="status" class="status"></p>
+    </main>
+    <dialog id="tuneDialog" class="tune-dialog">
+      <form id="tuneForm" method="dialog" class="tune-panel">
+        <header class="tune-head">
+          <div>
+            <p class="eyebrow">Tune recommendations</p>
+            <h2 id="tuneTitle">Selected video</h2>
+            <p id="tuneMeta" class="meta"></p>
+          </div>
+          <button id="tuneClose" type="button" class="icon-button" aria-label="Close">x</button>
+        </header>
+        <div class="tune-options">
+          <section class="tune-option manual-option">
+            <h3>Manual Fast</h3>
+            <p class="option-warning">Do not describe this video. Describe a type of video you want to avoid. Your words are kept exactly.</p>
+            <label class="field">
+              <span>Category to avoid</span>
+              <input id="manualInput" autocomplete="off" placeholder="e.g. celebrity reaction clips, crypto hype, stream highlights">
+            </label>
+            <button id="manualTune" type="button" class="secondary">Draft Manual Rule</button>
+          </section>
+          <section class="tune-option ai-option">
+            <h3>AI Assistant</h3>
+            <p class="option-warning slow-warning">Very slow. Gemini CLI inspects video metadata and helps refine the rule.</p>
+            <section id="videoDetails" class="video-details" hidden></section>
+            <div id="tuneMessages" class="tune-messages" aria-live="polite"></div>
+            <label class="field">
+              <span>Optional details for Gemini</span>
+              <textarea id="tuneInput" rows="3" placeholder="What should Gemini understand before revising the filter?"></textarea>
+            </label>
+            <button id="tuneSend" type="button">Run AI Assistant</button>
+          </section>
+        </div>
+        <section id="proposal" class="proposal" hidden>
+          <label class="field">
+            <span>Reviewed filter prompt</span>
+            <textarea id="proposedFilter" rows="7"></textarea>
+          </label>
+          <div class="tune-actions">
+            <button id="tuneCancel" type="button" class="secondary">Cancel</button>
+            <button id="useProposal" type="button">Use Prompt & Refresh</button>
+          </div>
+        </section>
+        <div class="tune-actions">
+          <button id="tuneCancelIdle" type="button" class="secondary">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

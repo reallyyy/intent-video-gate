@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Intent Video Gate",
+  "version": "0.1.0",
+  "description": "Routes YouTube and Bilibili video access through the local Intent Video Gate.",
+  "permissions": ["webNavigation", "tabs", "scripting"],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://youtu.be/*",
+    "*://*.bilibili.com/*",
+    "*://accounts.google.com/*",
+    "*://myaccount.google.com/*",
+    "*://passport.bilibili.com/*",
+    "*://account.bilibili.com/*",
+    "http://127.0.0.1:47231/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://youtu.be/*",
+        "*://*.bilibili.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["focus.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Intent Video Gate"
+  }
+}
