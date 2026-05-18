@@ -7,7 +7,7 @@ import { proxyBilibiliThumbnail, thumbnailProxyPath } from "./bilibili.js";
 import { createGrant, hasGrant } from "./grants.js";
 import { commandExists } from "./process.js";
 import { classifyBrowserNavigation, parseVideoUrl } from "./rules.js";
-import { appendHistory, readAuthState, readCachedFeed, readCachedSuggestions, readFilter, writeAuthState, writeCachedFeed, writeCachedSuggestions, writeFilter } from "./store.js";
+import { appendHistory, readAuthState, readBlockKeywords, readCachedFeed, readCachedSuggestions, readFilter, writeAuthState, writeCachedFeed, writeCachedSuggestions, writeFilter } from "./store.js";
 import { metadataForUrl, youtubeRecommendations } from "./video.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -37,20 +37,20 @@ export function createApp(config) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/health") {
-        return json(res, { ok: true, filter: await readFilter(), auth: await readAuthState(), doctor: await doctor(config) });
+        return json(res, { ok: true, filter: await readFilter(), blockKeywords: await readBlockKeywords(config.blockKeywords), auth: await readAuthState(), doctor: await doctor(config) });
       }
       if (req.method === "POST" && url.pathname === "/api/session") {
         const body = await readJson(req);
         return json(res, { ok: true, auth: await writeAuthState(body.platform, body.status) });
       }
       if (req.method === "GET" && url.pathname === "/api/filter") {
-        return json(res, { filter: await readFilter() });
+        return json(res, { filter: await readFilter(), blockKeywords: await readBlockKeywords(config.blockKeywords) });
       }
       if (req.method === "POST" && url.pathname === "/api/filter") {
         const body = await readJson(req);
-        await writeFilter(String(body.filter || "").trim());
+        await writeFilter(String(body.filter || "").trim(), Array.isArray(body.blockKeywords) ? body.blockKeywords : undefined);
         await writeCachedFeed([]);
-        return json(res, { filter: await readFilter() });
+        return json(res, { filter: await readFilter(), blockKeywords: await readBlockKeywords(config.blockKeywords) });
       }
       if (req.method === "POST" && url.pathname === "/api/filter/refine-video") {
         const body = await readJson(req);
@@ -67,16 +67,20 @@ export function createApp(config) {
           reply: result.reply,
           videoSummary: result.videoSummary,
           suggestedReasons: result.suggestedReasons,
+          suggestedOptions: result.suggestedOptions,
           proposedFilter: result.proposedFilter
         });
       }
       if (req.method === "GET" && url.pathname === "/api/feed") {
         const refresh = url.searchParams.get("refresh") === "1";
         const cached = refresh ? [] : await readCachedFeed();
-        const items = (cached.length ? cached : await approvedFeed(config)).map(publicCachedVideo);
+        const result = cached.length
+          ? { items: cached, diagnostics: cachedFeedDiagnostics(cached) }
+          : await approvedFeedResult(config);
+        const items = result.items.map(publicCachedVideo);
         feedItems.clear();
         for (const item of items) feedItems.set(item.id, item);
-        return json(res, { items });
+        return json(res, { items, diagnostics: result.diagnostics });
       }
       if (req.method === "POST" && url.pathname === "/api/watch") {
         const body = await readJson(req);
@@ -130,25 +134,33 @@ export async function doctor(config) {
 }
 
 export async function approvedFeed(config) {
+  return (await approvedFeedResult(config)).items;
+}
+
+export async function approvedFeedResult(config) {
   const filter = await readFilter();
-  if (!filter) return [];
+  if (!filter) return { items: [], diagnostics: emptyDiagnostics() };
 
   const [youtube, cached] = await Promise.allSettled([
     youtubeRecommendations(config, config.suggestions.maxCollected),
     readCachedSuggestions()
   ]);
   const cachedBilibili = cached.status === "fulfilled" ? cached.value.filter(isCollectedBilibiliItem) : [];
-  const candidates = mergeByUrl([
-    ...cachedBilibili,
-    ...(youtube.status === "fulfilled" ? youtube.value : [])
-  ]).slice(0, config.suggestions.maxCollected);
+  const candidates = selectFeedCandidates({
+    cachedBilibili,
+    youtubeItems: youtube.status === "fulfilled" ? youtube.value : [],
+    limit: config.suggestions.maxCollected
+  });
 
-  const gated = await classifyInBatches({ intent: filter, candidates, config, batchSize: 24 });
+  const blockKeywords = await readBlockKeywords(config.blockKeywords);
+  const prefiltered = applyKeywordPrefilter(candidates, blockKeywords);
+  const gated = await classifyInBatches({ intent: filter, candidates: prefiltered.allowed, config, batchSize: 24 });
   const approved = gated.filter((item) => item.gate?.decision === "allow");
   const hydrated = await hydrateMissingThumbnails(mixedPlatforms(approved, config.suggestions.feedSize), config);
   const feed = hydrated.map(publicVideo);
+  const diagnostics = buildFeedDiagnostics({ candidates, keywordBlocked: prefiltered.blocked, gated, approved: hydrated });
   await writeCachedFeed(feed);
-  return feed;
+  return { items: feed, diagnostics };
 }
 
 async function hydrateMissingThumbnails(items, config) {
@@ -254,6 +266,94 @@ function isBilibiliVideoUrl(rawUrl) {
 
 function isCollectedBilibiliItem(item) {
   return item?.platform === "bilibili" && String(item.id || "").startsWith("bilibili:") && isBilibiliVideoUrl(item.url || "");
+}
+
+export function selectFeedCandidates({ cachedBilibili = [], youtubeItems = [], limit }) {
+  return mixedPlatforms(mergeByUrl([...cachedBilibili, ...youtubeItems]), limit);
+}
+
+export function applyKeywordPrefilter(candidates = [], blockKeywords = []) {
+  const keywords = normalizeKeywords(blockKeywords);
+  if (!keywords.length) return { allowed: candidates, blocked: [] };
+
+  const allowed = [];
+  const blocked = [];
+  for (const candidate of candidates) {
+    const haystack = searchableText(candidate);
+    const keyword = keywords.find((value) => haystack.includes(normalizeText(value)));
+    if (!keyword) {
+      allowed.push(candidate);
+      continue;
+    }
+    blocked.push({
+      ...candidate,
+      gate: {
+        decision: "block",
+        confidence: 1,
+        reason: `Blocked by keyword: ${keyword}`,
+        labels: ["keyword-block"],
+        safeTitle: candidate.title || "Blocked item",
+        keyword
+      }
+    });
+  }
+  return { allowed, blocked };
+}
+
+function normalizeKeywords(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
+}
+
+function searchableText(item) {
+  return normalizeText([
+    item.title,
+    item.uploader,
+    item.channel,
+    ...(Array.isArray(item.tags) ? item.tags : [])
+  ].filter(Boolean).join(" "));
+}
+
+function normalizeText(value) {
+  return String(value || "").toLocaleLowerCase().normalize("NFKC");
+}
+
+function buildFeedDiagnostics({ candidates = [], keywordBlocked = [], gated = [], approved = [] }) {
+  return {
+    candidatesByPlatform: countBy(candidates, (item) => item.platform),
+    keywordBlockedByPlatform: countBy(keywordBlocked, (item) => item.platform),
+    decisions: countBy(gated, (item) => item.gate?.decision || "missing"),
+    approvedByPlatform: countBy(approved, (item) => item.platform),
+    keywordMatches: countBy(keywordBlocked, (item) => item.gate?.keyword || "unknown")
+  };
+}
+
+function cachedFeedDiagnostics(items = []) {
+  return {
+    ...emptyDiagnostics(),
+    approvedByPlatform: countBy(items, (item) => item.platform),
+    cached: true
+  };
+}
+
+function emptyDiagnostics() {
+  return {
+    candidatesByPlatform: {},
+    keywordBlockedByPlatform: {},
+    decisions: {},
+    approvedByPlatform: {},
+    keywordMatches: {}
+  };
+}
+
+function countBy(items, getKey) {
+  const counts = {};
+  for (const item of items) {
+    const key = String(getKey(item) || "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
 }
 
 function mergeByUrl(items) {

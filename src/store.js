@@ -85,7 +85,18 @@ export async function readFilter() {
   }
 }
 
-export async function writeFilter(filter) {
+export async function readBlockKeywords(defaults = []) {
+  try {
+    const raw = await readFile(paths.configFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return normalizeList(parsed.blockKeywords || defaults);
+  } catch (error) {
+    if (error.code === "ENOENT") return normalizeList(defaults);
+    throw error;
+  }
+}
+
+export async function writeFilter(filter, blockKeywords) {
   await ensureDirs();
   let current = {};
   try {
@@ -94,6 +105,7 @@ export async function writeFilter(filter) {
     if (error.code !== "ENOENT") throw error;
   }
   current.filter = String(filter || "");
+  if (Array.isArray(blockKeywords)) current.blockKeywords = normalizeList(blockKeywords);
   await writeFile(paths.configFile, JSON.stringify(current, null, 2) + "\n");
 }
 
@@ -176,6 +188,12 @@ export async function preferenceProfile(limit = 300) {
 
 function unique(values) {
   return [...new Set(values.filter(Boolean).map(String))];
+}
+
+function normalizeList(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
 }
 
 function summary(candidate) {

@@ -27,6 +27,7 @@ export const defaultConfig = {
     youtubeCookieBrowser: "chromium:/home/camel/snap/chromium/common/chromium",
     youtubeRecommendationUrl: "https://www.youtube.com/feed/recommended"
   },
+  blockKeywords: ["warhammer", "战锤", "星际道士", "道士", "sora", "B站AI创作大赛"],
   policy: {
     blockShorts: true,
     maxDefaultDurationSeconds: 7200
@@ -64,6 +65,13 @@ function mergeConfig(base, override) {
   out.tools = { ...base.tools, ...(override.tools || {}) };
   out.viewer = { ...base.viewer, ...(override.viewer || {}) };
   out.suggestions = { ...base.suggestions, ...(override.suggestions || {}) };
+  out.blockKeywords = normalizeList(override.blockKeywords || base.blockKeywords);
   out.policy = { ...base.policy, ...(override.policy || {}) };
   return out;
+}
+
+function normalizeList(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
 }

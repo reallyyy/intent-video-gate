@@ -112,6 +112,53 @@ button.secondary {
   color: var(--ink);
 }
 
+.keyword-panel {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(120px, 180px) auto;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf8;
+}
+
+.keyword-label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.keyword-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.keyword-chip {
+  min-height: 32px;
+  padding: 0 9px;
+  border-color: #bed1cc;
+  background: #e7f0ee;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.keyword-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#keywordInput {
+  min-height: 36px;
+}
+
+#addKeyword {
+  min-height: 36px;
+}
+
 .status {
   margin: 12px 0 0;
   color: var(--muted);
@@ -346,6 +393,33 @@ button.secondary {
   background: #f0eee7;
 }
 
+.ai-options {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-options-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ai-option-button {
+  min-height: 40px;
+  justify-content: start;
+  padding: 8px 10px;
+  text-align: left;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.ai-option-button.selected {
+  border-color: var(--accent);
+  background: #e7f0ee;
+  color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .tune-actions {
   display: flex;
   gap: 8px;
@@ -378,6 +452,15 @@ button.secondary {
   .prompt-actions {
     grid-column: 1 / -1;
     order: 4;
+  }
+
+  .keyword-panel {
+    grid-template-columns: 1fr auto;
+  }
+
+  .keyword-label,
+  .keyword-chips {
+    grid-column: 1 / -1;
   }
 
   .prompt-actions button,

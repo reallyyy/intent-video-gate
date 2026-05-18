@@ -29,7 +29,7 @@ test("refresh rebuilds the Chromium feed with YouTube and Bilibili videos", { ti
       "YouTube refreshed E2E video one",
       "YouTube refreshed E2E video two"
     ]);
-    assert.equal(await evaluate(page, `document.querySelector("#status")?.textContent`), "3 videos");
+    assert.match(await evaluate(page, `document.querySelector("#status")?.textContent`), /^3 videos/);
   } finally {
     page.close();
     await closeTarget(e2e.devtoolsUrl, opened.id);

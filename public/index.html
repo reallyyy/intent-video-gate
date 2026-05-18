@@ -19,6 +19,12 @@
           <button id="apply" type="button">Apply & Refresh</button>
         </div>
       </header>
+      <section class="keyword-panel" aria-label="Blocked words">
+        <span class="keyword-label">Blocked words</span>
+        <div id="keywordChips" class="keyword-chips"></div>
+        <input id="keywordInput" autocomplete="off" placeholder="Add word">
+        <button id="addKeyword" type="button" class="secondary">Add</button>
+      </section>
       <section id="player" class="player" hidden>
         <iframe id="playerFrame" title="Video player" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
       </section>
@@ -50,6 +56,7 @@
             <p class="option-warning slow-warning">Very slow. Gemini CLI inspects video metadata and helps refine the rule.</p>
             <section id="videoDetails" class="video-details" hidden></section>
             <div id="tuneMessages" class="tune-messages" aria-live="polite"></div>
+            <div id="aiOptions" class="ai-options" hidden></div>
             <label class="field">
               <span>Optional details for Gemini</span>
               <textarea id="tuneInput" rows="3" placeholder="What should Gemini understand before revising the filter?"></textarea>

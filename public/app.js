@@ -4,12 +4,15 @@ const LOGIN_URLS = {
   bilibili: "https://passport.bilibili.com/login?gourl=https%3A%2F%2Fwww.bilibili.com%2Faccount%2Fhistory%3Fintent_login_check%3D1"
 };
 let savedFilter = "";
+let savedBlockKeywords = [];
+let blockKeywords = [];
 let busy = false;
 let feedRefreshing = false;
 let aiRunning = false;
 let tuneItem = null;
 let tuneMessages = [];
-let selectedReason = "";
+let aiOptions = [];
+let selectedReasons = [];
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -24,7 +27,10 @@ async function api(path, options = {}) {
 async function init() {
   const health = await api("/api/health");
   savedFilter = health.filter || "";
+  savedBlockKeywords = normalizeKeywords(health.blockKeywords);
+  blockKeywords = [...savedBlockKeywords];
   $("filter").value = savedFilter;
+  renderKeywords();
   updateLoginActions(health.auth);
   updateControls();
   await loadFeed();
@@ -39,10 +45,13 @@ async function applyFilter() {
   setBusy(true, "Saving prompt...");
   const data = await api("/api/filter", {
     method: "POST",
-    body: JSON.stringify({ filter: currentFilter() })
+    body: JSON.stringify({ filter: currentFilter(), blockKeywords })
   });
   savedFilter = data.filter || "";
+  savedBlockKeywords = normalizeKeywords(data.blockKeywords);
+  blockKeywords = [...savedBlockKeywords];
   $("filter").value = savedFilter;
+  renderKeywords();
   await loadFeed({ refresh: true });
 }
 
@@ -54,7 +63,7 @@ async function loadFeed({ refresh = false } = {}) {
     const data = await api(`/api/feed${refresh ? "?refresh=1" : ""}`);
     render(data.items || []);
     feedRefreshing = false;
-    setBusy(false, `${data.items?.length || 0} videos`);
+    setBusy(false, feedStatus(data.items || [], data.diagnostics));
   } catch (error) {
     render([]);
     feedRefreshing = false;
@@ -154,7 +163,7 @@ function currentFilter() {
 }
 
 function promptDirty() {
-  return currentFilter() !== savedFilter;
+  return currentFilter() !== savedFilter || keywordsChanged();
 }
 
 function updateControls() {
@@ -166,6 +175,76 @@ function updateControls() {
   if (!busy && dirty) {
     $("status").textContent = "Prompt changed. Apply & Refresh to update the feed.";
   }
+}
+
+function normalizeKeywords(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
+}
+
+function keywordsChanged() {
+  return JSON.stringify(normalizeKeywords(blockKeywords)) !== JSON.stringify(normalizeKeywords(savedBlockKeywords));
+}
+
+function renderKeywords() {
+  const chips = $("keywordChips");
+  chips.textContent = "";
+  if (!blockKeywords.length) {
+    const empty = document.createElement("span");
+    empty.className = "keyword-empty";
+    empty.textContent = "None";
+    chips.append(empty);
+    return;
+  }
+  for (const keyword of blockKeywords) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "keyword-chip";
+    chip.textContent = `${keyword} x`;
+    chip.title = `Remove ${keyword}`;
+    chip.addEventListener("click", () => removeKeyword(keyword));
+    chips.append(chip);
+  }
+}
+
+function addKeyword() {
+  const value = $("keywordInput").value.trim();
+  if (!value) return;
+  blockKeywords = normalizeKeywords([...blockKeywords, value]);
+  $("keywordInput").value = "";
+  renderKeywords();
+  updateControls();
+}
+
+function removeKeyword(keyword) {
+  blockKeywords = blockKeywords.filter((value) => value !== keyword);
+  renderKeywords();
+  updateControls();
+}
+
+function feedStatus(items, diagnostics = {}) {
+  const parts = [`${items.length} videos`];
+  const approved = countsText(diagnostics.approvedByPlatform);
+  const candidates = countsText(diagnostics.candidatesByPlatform);
+  const keywordBlocked = sumCounts(diagnostics.keywordBlockedByPlatform);
+  const keywordMatches = countsText(diagnostics.keywordMatches);
+  if (approved) parts.push(`approved: ${approved}`);
+  if (candidates) parts.push(`candidates: ${candidates}`);
+  if (keywordBlocked) parts.push(`keyword-blocked: ${keywordBlocked}${keywordMatches ? ` (${keywordMatches})` : ""}`);
+  if (diagnostics.cached) parts.push("cached");
+  return parts.join(" · ");
+}
+
+function countsText(counts = {}) {
+  return Object.entries(counts)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([key, count]) => `${key} ${count}`)
+    .join(", ");
+}
+
+function sumCounts(counts = {}) {
+  return Object.values(counts).reduce((total, count) => total + Number(count || 0), 0);
 }
 
 function updateLoginActions(auth = {}) {
@@ -187,7 +266,8 @@ function formatDuration(seconds) {
 function openTune(item) {
   tuneItem = item;
   tuneMessages = [];
-  selectedReason = "";
+  aiOptions = [];
+  selectedReasons = [];
   $("tuneTitle").textContent = item.title || "Selected video";
   $("tuneMeta").textContent = [item.platform, item.uploader, formatDuration(item.durationSeconds)].filter(Boolean).join(" · ");
   $("manualInput").value = "";
@@ -197,6 +277,7 @@ function openTune(item) {
   $("videoDetails").hidden = false;
   $("videoDetails").textContent = "AI Assistant has not run yet.";
   renderTuneMessages();
+  renderAiOptions();
   setTuneBusy(false, "");
   $("tuneDialog").showModal();
   $("manualInput").focus();
@@ -206,6 +287,8 @@ function closeTune() {
   $("tuneDialog").close();
   tuneItem = null;
   tuneMessages = [];
+  aiOptions = [];
+  selectedReasons = [];
 }
 
 function renderTuneMessages() {
@@ -226,6 +309,61 @@ function renderTuneMessages() {
   }
 }
 
+function renderAiOptions() {
+  const list = $("aiOptions");
+  list.textContent = "";
+  list.hidden = !aiOptions.length;
+  if (!aiOptions.length) return;
+
+  const label = document.createElement("p");
+  label.className = "ai-options-label";
+  label.textContent = "Choose what to tune out";
+  list.append(label);
+
+  for (const option of aiOptions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary ai-option-button";
+    button.textContent = option.reason;
+    button.classList.toggle("selected", selectedReasons.includes(option.reason));
+    button.setAttribute("aria-pressed", selectedReasons.includes(option.reason) ? "true" : "false");
+    button.addEventListener("click", () => selectAiOption(option));
+    list.append(button);
+  }
+}
+
+function selectAiOption(option) {
+  selectedReasons = selectedReasons.includes(option.reason)
+    ? selectedReasons.filter((reason) => reason !== option.reason)
+    : [...selectedReasons, option.reason];
+  updateAiProposal();
+  renderAiOptions();
+  setTuneBusy(false, "");
+}
+
+function updateAiProposal() {
+  const selected = aiOptions.filter((option) => selectedReasons.includes(option.reason));
+  if (!selected.length) {
+    $("proposedFilter").value = "";
+    $("proposal").hidden = true;
+    return;
+  }
+  $("proposedFilter").value = selected.length === 1
+    ? selected[0].proposedFilter
+    : buildCombinedAiProposal(selected);
+  $("proposal").hidden = false;
+}
+
+function buildCombinedAiProposal(selected) {
+  const base = savedFilter || currentFilter();
+  const guidance = selected
+    .map((option) => option.blockingGuidance || option.reason)
+    .filter(Boolean)
+    .map((line) => `- ${line}`)
+    .join("\n");
+  return `${base}\n\nAvoid recommendations matching these tune-out categories:\n${guidance}`.trim();
+}
+
 function buildManualProposal(reason = "") {
   if (!tuneItem) return;
   const chosen = String(reason || $("manualInput").value || "").trim();
@@ -243,8 +381,10 @@ function buildManualProposal(reason = "") {
 async function analyzeTune(extraMessage = "") {
   if (!tuneItem) return;
   if (extraMessage) tuneMessages.push({ role: "user", content: extraMessage });
-  selectedReason = "";
+  selectedReasons = [];
+  aiOptions = [];
   renderTuneMessages();
+  renderAiOptions();
   aiRunning = true;
   setTuneBusy(true, "Gemini is checking video details...");
   try {
@@ -257,15 +397,36 @@ async function analyzeTune(extraMessage = "") {
       $("videoDetails").hidden = false;
       $("videoDetails").textContent = data.videoSummary;
     }
-    $("proposedFilter").value = data.proposedFilter || "";
-    $("proposal").hidden = false;
+    aiOptions = normalizeAiOptions(data);
+    $("proposedFilter").value = aiOptions.length ? "" : data.proposedFilter || "";
+    $("proposal").hidden = aiOptions.length || !$("proposedFilter").value.trim();
     renderTuneMessages();
+    renderAiOptions();
     aiRunning = false;
     setTuneBusy(false, "");
   } catch (error) {
     aiRunning = false;
     setTuneBusy(false, error.message);
   }
+}
+
+function normalizeAiOptions(data) {
+  const options = Array.isArray(data.suggestedOptions)
+    ? data.suggestedOptions.map((option) => ({
+      reason: String(option?.reason || "").trim(),
+      blockingGuidance: String(option?.blockingGuidance || option?.blocking_guidance || option?.reason || "").trim(),
+      proposedFilter: String(option?.proposedFilter || option?.proposed_filter || "").trim()
+    })).filter((option) => option.reason && option.proposedFilter).slice(0, 5)
+    : [];
+  if (options.length) return options;
+
+  const proposedFilter = String(data.proposedFilter || "").trim();
+  if (!proposedFilter || !Array.isArray(data.suggestedReasons)) return [];
+  return data.suggestedReasons
+    .map((reason) => String(reason || "").trim())
+    .filter(Boolean)
+    .slice(0, 5)
+    .map((reason) => ({ reason, blockingGuidance: reason, proposedFilter }));
 }
 
 async function sendTuneMessage() {
@@ -303,15 +464,20 @@ $("filter").addEventListener("keydown", (event) => {
   if (event.key === "Enter") applyFilter().catch((error) => setBusy(false, error.message));
 });
 $("filter").addEventListener("input", updateControls);
+$("addKeyword").addEventListener("click", addKeyword);
+$("keywordInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") addKeyword();
+});
 $("tuneClose").addEventListener("click", closeTune);
 $("tuneCancel").addEventListener("click", closeTune);
 $("tuneCancelIdle").addEventListener("click", closeTune);
-$("manualTune").addEventListener("click", () => buildManualProposal(selectedReason || $("manualInput").value));
+$("manualTune").addEventListener("click", () => buildManualProposal($("manualInput").value));
 $("tuneSend").addEventListener("click", () => sendTuneMessage().catch((error) => setTuneBusy(false, error.message)));
 $("useProposal").addEventListener("click", () => useProposal().catch((error) => setBusy(false, error.message)));
 $("proposedFilter").addEventListener("input", () => setTuneBusy(false, ""));
 $("manualInput").addEventListener("input", () => {
-  selectedReason = "";
+  selectedReasons = [];
+  renderAiOptions();
 });
 $("manualInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter") buildManualProposal();

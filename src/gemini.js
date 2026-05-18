@@ -41,7 +41,7 @@ export async function refineFilterForVideo({ intent, video, messages, config }) 
   throw new Error(fallbackParsed.error || parsed.error || "Gemini did not return a usable prompt update.");
 }
 
-function buildPrompt(intent, candidates, preferences) {
+export function buildPrompt(intent, candidates, preferences) {
   const compact = candidates.map((candidate) => ({
     id: candidate.id,
     platform: candidate.platform,
@@ -59,7 +59,8 @@ Personal preference profile:
 ${JSON.stringify(preferences, null, 2)}
 
 Allow useful platform recommendations that match or reasonably support the filter text.
-Block only videos that clearly violate the filter, are obvious distractions, are low-effort entertainment, pure music, celebrity gossip, clickbait, unrelated gaming/comedy, or blocked channels.
+Treat the user's filter text as the source of truth. If it explicitly allows a category, style, creator, platform, language, or music taste, evaluate that material against the user's stated constraints instead of applying a generic category veto.
+Block videos that clearly violate the filter text or the personal preference profile. Do not invent extra blocked categories beyond the user's text, the preference profile, and local keyword blocks already removed before this prompt.
 When uncertain, allow if the video is plausibly informative, educational, practical, technical, language-learning, news-analysis, documentary-like, or otherwise useful under the filter.
 
 Return only valid JSON, no markdown, with this shape:
@@ -99,11 +100,12 @@ ${JSON.stringify(messages, null, 2)}
 If there is no conversation yet, infer the most likely reasons this video may not fit the current filter from the title, uploader, description, tags, categories, duration, and URL. Offer useful reason choices so the user can accept your analysis without chatting.
 If the conversation includes a selected reason or extra detail, use it to refine your analysis.
 
-Write a concise reply to the user, summarize relevant video details, offer 3 to 5 potential reasons, and propose a full replacement filter prompt.
+Write a concise reply to the user, summarize relevant video details, and offer 3 to 5 clickable tune-out options.
+Each option must include a short reason, one standalone blocking guidance line, and a complete replacement filter prompt tailored to that reason.
 Preserve the user's original positive intent. Add only the minimum specific blocking guidance needed to avoid similar future recommendations. Do not make the filter hostile, overbroad, or unrelated to the current prompt.
 
 Return only valid JSON, no markdown, with this shape:
-{"reply":"short response to user","video_summary":"short factual summary of relevant details","suggested_reasons":["reason user can choose"],"proposed_filter":"complete updated filter prompt"}`;
+{"reply":"short response to user","video_summary":"short factual summary of relevant details","suggested_options":[{"reason":"reason user can choose","blocking_guidance":"short standalone blocking guidance line","proposed_filter":"complete updated filter prompt for this reason"}],"proposed_filter":"best default complete updated filter prompt"}`;
 }
 
 async function callGemini(prompt, model, config) {
@@ -169,13 +171,26 @@ export function parseFilterRefinementResult(result) {
   }
   const reply = String(inner.reply || "").trim();
   const videoSummary = String(inner.video_summary || "").trim();
-  const suggestedReasons = Array.isArray(inner.suggested_reasons)
+  const parsedOptions = Array.isArray(inner.suggested_options)
+    ? inner.suggested_options.map((option) => ({
+      reason: String(option?.reason || "").trim(),
+      blockingGuidance: String(option?.blocking_guidance || option?.blockingGuidance || option?.reason || "").trim(),
+      proposedFilter: String(option?.proposed_filter || option?.proposedFilter || "").trim()
+    })).filter((option) => option.reason && option.proposedFilter).slice(0, 5)
+    : [];
+  const legacyReasons = Array.isArray(inner.suggested_reasons)
     ? inner.suggested_reasons.map((reason) => String(reason || "").trim()).filter(Boolean).slice(0, 5)
     : [];
-  const proposedFilter = String(inner.proposed_filter || "").trim();
+  const proposedFilter = String(inner.proposed_filter || "").trim() || parsedOptions[0]?.proposedFilter || "";
+  const suggestedOptions = parsedOptions.length
+    ? parsedOptions
+    : legacyReasons.map((reason) => ({ reason, blockingGuidance: reason, proposedFilter }));
+  const suggestedReasons = suggestedOptions.length
+    ? suggestedOptions.map((option) => option.reason)
+    : legacyReasons;
   if (!reply) return { ok: false, error: "reply missing" };
   if (!proposedFilter) return { ok: false, error: "proposed_filter missing" };
-  return { ok: true, reply, videoSummary, suggestedReasons, proposedFilter };
+  return { ok: true, reply, videoSummary, suggestedReasons, suggestedOptions, proposedFilter };
 }
 
 function alignDecisions(candidates, decisions) {
