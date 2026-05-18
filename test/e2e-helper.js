@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../src/paths.js";
@@ -102,14 +102,85 @@ export async function setupE2E() {
   };
 }
 
-async function seedE2EState() {
+export async function setupRefreshE2E() {
+  const cleanup = [];
+  const tools = await writeFakeRefreshTools();
+  cleanup.push(() => rm(tools.root, { recursive: true, force: true }));
+
+  const state = await seedE2EState({
+    config: {
+      gemini: {
+        command: tools.gemini,
+        timeoutMs: 15000,
+        retries: 1
+      },
+      tools: {
+        ytdlp: tools.ytdlp
+      }
+    },
+    feed: [
+      {
+        id: "stale-youtube",
+        platform: "youtube",
+        title: "Stale cached video",
+        uploader: "Cache",
+        durationSeconds: 60,
+        thumbnail: "",
+        url: "https://www.youtube.com/watch?v=stale"
+      }
+    ],
+    suggestions: [
+      {
+        id: "bilibili:e2e-refresh",
+        platform: "bilibili",
+        title: "Bilibili refreshed E2E video",
+        uploader: "Bilibili",
+        durationSeconds: 465,
+        thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
+        url: "https://www.bilibili.com/video/BV11mFLziEyP"
+      }
+    ]
+  });
+  cleanup.push(() => rm(state.root, { recursive: true, force: true }));
+
+  const port = await availableAppPort();
+  const appUrl = `http://127.0.0.1:${port}/`;
+  const app = spawn(process.execPath, ["src/index.js", "serve", `--port=${port}`], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: {
+      ...process.env,
+      INTENT_VIDEO_CONFIG_DIR: state.configDir,
+      INTENT_VIDEO_DATA_DIR: state.dataDir
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  cleanup.push(() => stopProcess(app));
+  await waitForFetch(`${appUrl}api/health`, 15000, "isolated local app server");
+
+  const browser = await browserDevtools();
+  cleanup.push(browser.cleanup);
+
+  return {
+    appUrl,
+    devtoolsUrl: browser.devtoolsUrl,
+    cleanup: async () => {
+      for (const fn of cleanup.reverse()) await fn();
+    }
+  };
+}
+
+async function seedE2EState(options = {}) {
+  return seedE2EStateWith(options);
+}
+
+async function seedE2EStateWith({ config = {}, feed = E2E_FEED, suggestions = E2E_FEED }) {
   const root = await mkdtemp(join(tmpdir(), "intent-video-e2e-state-"));
   const configDir = join(root, "config");
   const dataDir = join(root, "data");
   await mkdir(configDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
-  await writeE2EConfig(join(configDir, "config.json"));
-  await writeE2ECache(join(dataDir, "cache.jsonl"));
+  await writeE2EConfig(join(configDir, "config.json"), config);
+  await writeE2ECache(join(dataDir, "cache.jsonl"), { feed, suggestions });
   return { root, configDir, dataDir };
 }
 
@@ -143,32 +214,102 @@ async function restoreFile(file, backup) {
   await writeFile(file, backup);
 }
 
-async function writeE2EConfig(file) {
-  await writeFile(file, `${JSON.stringify({
+async function writeE2EConfig(file, overrides = {}) {
+  await writeFile(file, `${JSON.stringify(mergeConfig({
     filter: "allow useful live browser smoke-test videos",
     auth: {
       youtube: { status: "signedIn", updatedAt: new Date().toISOString() },
       bilibili: { status: "signedIn", updatedAt: new Date().toISOString() }
     }
-  }, null, 2)}\n`, "utf8");
+  }, overrides), null, 2)}\n`, "utf8");
 }
 
-async function writeE2ECache(file) {
+async function writeE2ECache(file, { feed = E2E_FEED, suggestions = E2E_FEED } = {}) {
   await writeFile(file, `${JSON.stringify({
-    suggestions: E2E_FEED,
-    feed: E2E_FEED,
+    suggestions,
+    feed,
     updatedAt: new Date().toISOString(),
     feedUpdatedAt: new Date().toISOString()
   }, null, 2)}\n`, "utf8");
 }
 
-export async function openAppPage(devtoolsUrl) {
-  const opened = await (await fetch(`${devtoolsUrl}/json/new?${encodeURIComponent(APP)}`, { method: "PUT" })).json();
+export async function openAppPage(devtoolsUrl, appUrl = APP) {
+  const opened = await (await fetch(`${devtoolsUrl}/json/new?${encodeURIComponent(appUrl)}`, { method: "PUT" })).json();
   const page = new CdpSession(opened.webSocketDebuggerUrl);
   await page.open();
   await page.call("Page.enable");
   await page.call("Runtime.enable");
   return { opened, page };
+}
+
+async function writeFakeRefreshTools() {
+  const root = await mkdtemp(join(tmpdir(), "intent-video-e2e-tools-"));
+  const gemini = join(root, "gemini");
+  const ytdlp = join(root, "yt-dlp");
+  await writeFile(gemini, `#!/usr/bin/env node
+const promptIndex = process.argv.indexOf("-p");
+const prompt = promptIndex >= 0 ? process.argv[promptIndex + 1] || "" : "";
+const marker = "Candidates:";
+const candidatesText = prompt.includes(marker) ? prompt.slice(prompt.lastIndexOf(marker) + marker.length).trim() : "[]";
+const candidates = JSON.parse(candidatesText);
+const decisions = candidates.map((candidate) => ({
+  id: candidate.id,
+  decision: "allow",
+  confidence: 0.99,
+  reason: "E2E fixture allows refresh candidates.",
+  labels: ["e2e"],
+  safe_title: candidate.title
+}));
+process.stdout.write(JSON.stringify({ response: JSON.stringify({ decisions }) }));
+`, "utf8");
+  await writeFile(ytdlp, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const youtubeItems = [
+  {
+    id: "yt-refresh-1",
+    title: "YouTube refreshed E2E video one",
+    uploader: "YouTube",
+    duration: 276,
+    thumbnail: "https://i.ytimg.com/vi/yt-refresh-1/hq720.jpg",
+    webpage_url: "https://www.youtube.com/watch?v=yt-refresh-1"
+  },
+  {
+    id: "yt-refresh-2",
+    title: "YouTube refreshed E2E video two",
+    uploader: "YouTube",
+    duration: 388,
+    thumbnail: "https://i.ytimg.com/vi/yt-refresh-2/hq720.jpg",
+    webpage_url: "https://www.youtube.com/watch?v=yt-refresh-2"
+  }
+];
+if (args.includes("--flat-playlist")) {
+  process.stdout.write(youtubeItems.map((item) => JSON.stringify(item)).join("\\n") + "\\n");
+  process.exit(0);
+}
+const target = args[args.length - 1] || "";
+const item = target.includes("bilibili.com")
+  ? {
+      id: "BV11mFLziEyP",
+      title: "Bilibili refreshed E2E video",
+      uploader: "Bilibili",
+      duration: 465,
+      thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
+      webpage_url: "https://www.bilibili.com/video/BV11mFLziEyP"
+    }
+  : youtubeItems[0];
+process.stdout.write(JSON.stringify(item) + "\\n");
+`, "utf8");
+  await chmod(gemini, 0o755);
+  await chmod(ytdlp, 0o755);
+  return { root, gemini, ytdlp };
+}
+
+function mergeConfig(base, override) {
+  const out = { ...base, ...override };
+  for (const key of ["auth", "gemini", "tools", "viewer", "suggestions", "policy"]) {
+    if (base[key] || override[key]) out[key] = { ...(base[key] || {}), ...(override[key] || {}) };
+  }
+  return out;
 }
 
 export async function closeTarget(devtoolsUrl, targetId) {
@@ -372,6 +513,13 @@ async function availableDevtoolsPort() {
     if (!await canFetch(`http://127.0.0.1:${port}/json/version`)) return port;
   }
   return 9444;
+}
+
+async function availableAppPort() {
+  for (const port of [47232, 47233, 47234, 47235, 47236]) {
+    if (!await canFetch(`http://127.0.0.1:${port}/api/health`)) return port;
+  }
+  return 47237;
 }
 
 async function waitForFetch(url, timeoutMs, label) {
