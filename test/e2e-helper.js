@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { paths } from "../src/paths.js";
 
 export const APP = "http://127.0.0.1:47231/";
 const APP_HEALTH = `${APP}api/health`;
@@ -11,6 +12,26 @@ const DEVTOOLS_PORTS = [9222, 9223, 9224, 9225, 9333];
 const BROWSER_CANDIDATES = ["chromium", "chromium-browser", "google-chrome", "brave-browser", "brave"];
 const BROWSER_PROFILE = "/tmp/intent-video-chromium-controls";
 const EXTENSION_PATH = new URL("../extension", import.meta.url).pathname;
+const E2E_FEED = [
+  {
+    id: "e2e-youtube-lee-kuan-yew",
+    platform: "youtube",
+    title: "Lee Kuan Yew talks about China and Deng",
+    uploader: "YouTube",
+    durationSeconds: 276,
+    thumbnail: "https://i.ytimg.com/vi/nM1f6xNfwZw/hq720.jpg",
+    url: "https://www.youtube.com/watch?v=nM1f6xNfwZw"
+  },
+  {
+    id: "e2e-bilibili-player",
+    platform: "bilibili",
+    title: "Bilibili player E2E video",
+    uploader: "Bilibili",
+    durationSeconds: 465,
+    thumbnail: "",
+    url: "https://www.bilibili.com/video/BV11mFLziEyP"
+  }
+];
 
 export class CdpSession {
   constructor(webSocketDebuggerUrl) {
@@ -47,9 +68,18 @@ export class CdpSession {
 
 export async function setupE2E() {
   const cleanup = [];
-  if (!await canFetch(APP_HEALTH)) {
+  if (await canFetch(APP_HEALTH)) {
+    cleanup.push(await seedDefaultE2EState());
+  } else {
+    const state = await seedE2EState();
+    cleanup.push(() => rm(state.root, { recursive: true, force: true }));
     const app = spawn(process.execPath, ["src/index.js", "serve"], {
       cwd: new URL("..", import.meta.url).pathname,
+      env: {
+        ...process.env,
+        INTENT_VIDEO_CONFIG_DIR: state.configDir,
+        INTENT_VIDEO_DATA_DIR: state.dataDir
+      },
       stdio: ["ignore", "pipe", "pipe"]
     });
     cleanup.push(() => stopProcess(app));
@@ -70,6 +100,66 @@ export async function setupE2E() {
       for (const fn of cleanup.reverse()) await fn();
     }
   };
+}
+
+async function seedE2EState() {
+  const root = await mkdtemp(join(tmpdir(), "intent-video-e2e-state-"));
+  const configDir = join(root, "config");
+  const dataDir = join(root, "data");
+  await mkdir(configDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeE2EConfig(join(configDir, "config.json"));
+  await writeE2ECache(join(dataDir, "cache.jsonl"));
+  return { root, configDir, dataDir };
+}
+
+async function seedDefaultE2EState() {
+  const configBackup = await optionalRead(paths.configFile);
+  const cacheBackup = await optionalRead(paths.cacheFile);
+  await mkdir(paths.configDir, { recursive: true });
+  await mkdir(paths.dataDir, { recursive: true });
+  await writeE2EConfig(paths.configFile);
+  await writeE2ECache(paths.cacheFile);
+  return async () => {
+    await restoreFile(paths.configFile, configBackup);
+    await restoreFile(paths.cacheFile, cacheBackup);
+  };
+}
+
+async function optionalRead(file) {
+  try {
+    return await readFile(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function restoreFile(file, backup) {
+  if (backup === null) {
+    await rm(file, { force: true });
+    return;
+  }
+  await writeFile(file, backup);
+}
+
+async function writeE2EConfig(file) {
+  await writeFile(file, `${JSON.stringify({
+    filter: "allow useful live browser smoke-test videos",
+    auth: {
+      youtube: { status: "signedIn", updatedAt: new Date().toISOString() },
+      bilibili: { status: "signedIn", updatedAt: new Date().toISOString() }
+    }
+  }, null, 2)}\n`, "utf8");
+}
+
+async function writeE2ECache(file) {
+  await writeFile(file, `${JSON.stringify({
+    suggestions: E2E_FEED,
+    feed: E2E_FEED,
+    updatedAt: new Date().toISOString(),
+    feedUpdatedAt: new Date().toISOString()
+  }, null, 2)}\n`, "utf8");
 }
 
 export async function openAppPage(devtoolsUrl) {
@@ -101,12 +191,19 @@ export async function evaluate(page, expression) {
 
 export async function waitFor(page, expression, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  let lastError = null;
   while (Date.now() < deadline) {
-    if (await evaluate(page, expression)) return;
+    try {
+      if (await evaluate(page, expression)) return;
+      lastError = null;
+    } catch (error) {
+      lastError = error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   const diagnostics = await captureDiagnostics(page, `wait-timeout-${Date.now()}`);
-  throw new Error(`Timed out waiting for: ${expression}\n${diagnostics.summary}`);
+  const reason = lastError ? `\nLast evaluation error: ${lastError.message}` : "";
+  throw new Error(`Timed out waiting for: ${expression}${reason}\n${diagnostics.summary}`);
 }
 
 export async function captureDiagnostics(page, name) {

@@ -213,7 +213,7 @@ function assertFullScreenSurface(rect, viewportWidth, viewportHeight) {
 
 async function exerciseNativePlayerControls(page) {
   await moveMouseToPlayerControls(page);
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await waitFor(page, nativeControlsReadyExpression(), 15000);
 
   const quality = await revealNativeControlMenu(page, {
     label: "quality",
@@ -242,9 +242,32 @@ async function exerciseNativePlayerControls(page) {
   return { quality, playbackRate, subtitle };
 }
 
+function nativeControlsReadyExpression() {
+  return `(() => {
+    const visible = (node) => {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || 1) > 0 &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.right > 0 &&
+        rect.bottom > 0 &&
+        rect.left < innerWidth &&
+        rect.top < innerHeight;
+    };
+    return [
+      ".bpx-player-ctrl-quality",
+      ".bpx-player-ctrl-playbackrate",
+      ".bpx-player-ctrl-subtitle"
+    ].every((selector) => [...document.querySelectorAll(selector)].some(visible));
+  })()`;
+}
+
 async function revealNativeControlMenu(page, { label, controlNeedles, optionNeedles }) {
   const control = await evaluate(page, controlFinderExpression(controlNeedles));
-  if (!control) return { label, visible: false, menuOpened: false, optionCount: 0 };
+  if (!control) return await revealFromSettingsMenu(page, { label, controlNeedles, optionNeedles });
 
   await page.call("Input.dispatchMouseEvent", {
     type: "mouseMoved",
@@ -268,10 +291,45 @@ async function revealNativeControlMenu(page, { label, controlNeedles, optionNeed
   });
   await new Promise((resolve) => setTimeout(resolve, 700));
 
-  const menu = await evaluate(page, menuFinderExpression(optionNeedles, control));
+  const menu = await evaluate(page, menuFinderExpression([...optionNeedles, ...controlNeedles], control));
   return {
     label,
     visible: true,
+    menuOpened: menu.opened,
+    optionCount: menu.optionCount
+  };
+}
+
+async function revealFromSettingsMenu(page, { label, controlNeedles, optionNeedles }) {
+  const settings = await evaluate(page, controlFinderExpression(["setting", "设置"]));
+  if (!settings) return { label, visible: false, menuOpened: false, optionCount: 0 };
+
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: Math.round(settings.centerX),
+    y: Math.round(settings.centerY)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: Math.round(settings.centerX),
+    y: Math.round(settings.centerY),
+    button: "left",
+    clickCount: 1
+  });
+  await page.call("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: Math.round(settings.centerX),
+    y: Math.round(settings.centerY),
+    button: "left",
+    clickCount: 1
+  });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  const menu = await evaluate(page, menuFinderExpression([...optionNeedles, ...controlNeedles], settings));
+  return {
+    label,
+    visible: menu.opened,
     menuOpened: menu.opened,
     optionCount: menu.optionCount
   };
@@ -299,7 +357,7 @@ function controlFinderExpression(needles) {
       node.getAttribute("title") || "",
       typeof node.className === "string" ? node.className : ""
     ].join(" ").toLowerCase();
-    const candidates = [...document.querySelectorAll("button, [role='button'], [class*='quality'], [class*='subtitle'], [aria-label], [title]")];
+    const candidates = [...document.querySelectorAll("button, [role='button'], [class*='quality'], [class*='playbackrate'], [class*='subtitle'], [class*='setting'], [aria-label], [title]")];
     const match = candidates
       .filter(visible)
       .find((node) => needles.some((needle) => textFor(node).includes(needle)));
@@ -346,7 +404,7 @@ function menuFinderExpression(needles, control) {
         rect.bottom < control.top ||
         rect.top > control.top + control.height;
     };
-    const options = [...document.querySelectorAll("li, button, [role='menuitem'], [role='option'], [class*='quality'], [class*='subtitle'], [class*='option'], [class*='menu'], [class*='panel']")]
+    const options = [...document.querySelectorAll("li, button, [role='menuitem'], [role='option'], [class*='quality'], [class*='playbackrate'], [class*='subtitle'], [class*='setting'], [class*='option'], [class*='menu'], [class*='panel']")]
       .filter((node) => visible(node) && isOutsideControl(node) && needles.some((needle) => textFor(node).includes(needle)));
     return {
       opened: options.length > 0,
