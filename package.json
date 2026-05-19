@@ -1,7 +1,8 @@
 {
   "name": "intent-video-gate",
   "version": "0.1.0",
-  "private": true,
+  "description": "AI-gated mixed YouTube and Bilibili video feed with Gemini classification, keyword blocking, and native subtitle policy",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "intent-video": "./src/index.js"
@@ -9,9 +10,25 @@
   "scripts": {
     "start": "node src/index.js serve",
     "doctor": "node src/index.js doctor",
-    "test": "node --test --test-concurrency=1 test/*.test.js"
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "e2e-login": "node scripts/e2e-login.js"
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "keywords": [
+    "gemini",
+    "youtube",
+    "bilibili",
+    "ai",
+    "video-feed",
+    "content-filter",
+    "intent-filter",
+    "recommendations"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reallyyy/intent-video-gate.git"
+  },
+  "homepage": "https://github.com/reallyyy/intent-video-gate#readme"
 }

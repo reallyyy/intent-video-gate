@@ -1,64 +1,168 @@
 # Intent Video Gate
 
-Barebones mixed video app for YouTube and Bilibili. The app shows one filter field and a feed of Gemini-approved videos only. Blocked content is not rendered.
+A local-first, AI-gated video feed that merges YouTube and Bilibili recommendations into one curated list. You write a natural-language intent filter (e.g. "allow history documentaries and engineering explainers"), and Gemini classifies every candidate video as allowed or blocked. Only approved videos appear in the feed.
+
+The browser extension prevents direct browsing of YouTube and Bilibili. When you click "Watch" on an approved video, the current tab navigates to the real signed-in watch page, stripped to a bare fullscreen player with native quality controls, subtitles, account history, and view tracking intact. No new tabs open.
+
+## Features
+
+- **Gemini AI classification** -- each video candidate is evaluated against your intent filter text. Fail-closed: if the AI is unreachable, nothing passes through.
+- **Multi-platform feed** -- merges YouTube and Bilibili recommendations in a single page. YouTube comes from your signed-in recommendations via yt-dlp. Bilibili comes from the public API, yt-dlp, or cached suggestions.
+- **Keyword blocklist** -- pre-AI keyword filter removes candidates by title, uploader, or tag before they ever reach Gemini. Managed from the web UI.
+- **Bilibili English subtitle policy** -- Bilibili videos are only eligible when the Bilibili API reports an English-capable or bilingual subtitle track. Chinese-only AI subtitles are filtered out. The extension auto-activates bilingual subtitle mode on Bilibili watch pages.
+- **Short-lived watch grants** -- clicking "Watch" creates a time-limited grant (5 minutes by default) for that exact URL. The extension checks grants before allowing any YouTube/Bilibili navigation. Unauthorized navigation is redirected back to the app.
+- **Tune-out** -- every card has a "Tune out" button with two modes: manual (type a category to avoid) or AI-assisted (Gemini proposes clickable filter refinements based on the video's metadata).
+- **Bilibili suggestion collection** -- the extension collects Bilibili recommendation cards from signed-in browsing and sends them to the app for the next feed refresh.
+- **Watch history** -- every watch action is logged locally with metadata and timestamps.
+- **Thumbnail proxy** -- Bilibili thumbnails (hdslb.com) are proxied through the local server to avoid CORS issues.
+- **Zero runtime dependencies** -- everything uses Node.js built-in modules. No npm install step.
 
 ## Requirements
 
-- Node 20+
-- `gemini` CLI authenticated
-- `yt-dlp` for recommendation metadata extraction
-- Chromium or Brave with the extension loaded and signed into YouTube/Bilibili
+- **Node.js 20+**
+- **Gemini CLI** -- the `gemini` command-line tool, authenticated. Install from [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli).
+- **yt-dlp** -- for YouTube and Bilibili metadata extraction and recommendation crawling.
+- **Chromium or Brave** -- the browser that runs the extension.
 
-Run:
+## Installation
+
+```bash
+git clone https://github.com/reallyyy/intent-video-gate.git
+cd intent-video-gate
+```
+
+No `npm install` needed. The project has zero dependencies.
+
+## Quick start
+
+Start the local server:
 
 ```bash
 npm start
 ```
 
-Then open:
+Open http://127.0.0.1:47231 in the browser where the extension is loaded.
 
-```text
-http://127.0.0.1:47231
-```
-
-Check dependencies:
+Check that `gemini` and `yt-dlp` are on PATH:
 
 ```bash
 npm run doctor
 ```
 
-By default, config and state live in `~/.config/intent-video` and `~/.local/share/intent-video`. If those directories are unavailable, the app falls back to `.intent-video/` inside the current project. You can force paths with `INTENT_VIDEO_CONFIG_DIR` and `INTENT_VIDEO_DATA_DIR`.
+The doctor endpoint is also available at http://127.0.0.1:47231/api/doctor.
 
-## Browser Extension
+## Browser extension
 
-Load `extension/` as an unpacked extension. It blocks normal platform browsing, allows short-lived approved watch URLs, strips native watch pages, and forwards Bilibili recommendation cards to the local app.
+1. Open Chromium or Brave.
+2. Go to `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select the `extension/` directory from this project.
+5. Sign into YouTube and Bilibili in that browser.
 
-Sign into YouTube Premium and Bilibili in Brave once. The app does not store account credentials.
+The extension intercepts all YouTube and Bilibili navigation, checks the local app for a valid watch grant, and either allows the navigation or redirects back to the app. On watch pages it strips everything except the player.
 
-## Barebones Watch Mode
+## Configuration
 
-Clicking a YouTube or Bilibili card creates a short-lived grant for that exact video URL and navigates the current tab to the real signed-in watch page. The extension strips the page down to a bare full-window player surface while preserving the video aspect ratio, native quality selector, subtitles, full-length view tracking, and account history.
+Config and data are stored in standard XDG-like directories:
 
-For Bilibili, recommendations are eligible only when Bilibili exposes an English-capable or bilingual subtitle/CC track. Chinese-only AI subtitles are filtered out because stacked subtitles need visible source and English lines to be useful, without any paid translation API.
+| What | Default path | Override env var |
+|------|-------------|-----------------|
+| Config dir | `~/.config/intent-video` | `INTENT_VIDEO_CONFIG_DIR` |
+| Data dir | `~/.local/share/intent-video` | `INTENT_VIDEO_DATA_DIR` |
 
-The watch flow must not create new tabs or windows.
+If those directories are not writable, the app falls back to `.intent-video/` in the project root.
 
-The local app remains the unified place for the mixed approved feed.
+On first run the app writes `config.json` to the config directory with defaults. Edit it to change any setting. Key fields:
 
-## Gemini Integration
-
-The app calls Gemini headlessly:
-
-```bash
-gemini -p "<prompt>" -m gemini-3.1-flash-lite-preview -y --skip-trust --output-format json
+```jsonc
+{
+  "filter": "your intent filter text here",
+  "port": 47231,
+  "blockKeywords": ["warhammer", "sora"],
+  "gemini": {
+    "command": "gemini",
+    "model": "gemini-3.1-flash-lite-preview",
+    "fallbackModel": "gemini-3-flash-preview"
+  },
+  "suggestions": {
+    "youtubeCookieBrowser": "chromium",
+    "bilibiliCookieBrowser": "chromium",
+    "feedSize": 20
+  }
+}
 ```
 
-It parses the outer Gemini JSON and then parses strict decision JSON from the `response` field. Invalid or missing AI output blocks the candidate.
+The `youtubeCookieBrowser` and `bilibiliCookieBrowser` fields are passed to yt-dlp's `--cookies-from-browser` flag. On first run the app auto-detects an installed browser (chromium, brave, google-chrome, or firefox). You can override with a browser name or `browser:/path/to/profile`.
 
-## Commands
+## How it works
+
+The system has two parts: a local HTTP server and a browser extension.
+
+### Server
+
+The Node.js server at http://127.0.0.1:47231 handles:
+
+1. Reads your intent filter text and keyword blocklist.
+2. Collects candidates from YouTube recommendations (via yt-dlp with browser cookies) and Bilibili (via yt-dlp, the Bilibili API, or cached suggestions from the extension).
+3. Pre-filters Bilibili candidates by English subtitle availability using the Bilibili API.
+4. Pre-filters all candidates against the keyword blocklist.
+5. Sends remaining candidates to Gemini in batches for AI classification.
+6. If too few Bilibili videos pass, generates search queries via Gemini and searches Bilibili for more.
+7. Selects the final mixed feed (up to 20 YouTube + a proportional slice of Bilibili).
+8. Caches the approved feed for fast reloading.
+
+### Extension
+
+The Manifest V3 extension:
+
+- **background.js** -- intercepts all YouTube and Bilibili navigation via `chrome.webNavigation.onBeforeNavigate`. Checks the local app for grant status. Proxies Bilibili API requests from content scripts.
+- **content.js** -- injected on YouTube and Bilibili pages. Hides masthead, sidebar, comments, and recommendations. Activates Bilibili bilingual subtitles. Collects Bilibili recommendation cards and sends them to the app. Reports auth state.
+- **focus.css** -- CSS that makes the player fill the viewport.
+
+## API reference
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/health` | Health check, returns filter, keywords, auth, doctor status |
+| GET | `/api/doctor` | Dependency check results |
+| GET/PUT | `/api/filter` | Read or update intent filter text |
+| GET/PUT | `/api/block-keywords` | Read or update keyword blocklist |
+| GET | `/api/feed` | Get approved video feed (cached or fresh) |
+| POST | `/api/watch` | Create a watch grant for a video |
+| POST | `/api/filter/refine-video` | AI-assisted filter refinement for a specific video |
+| POST | `/api/collect-bilibili` | Receive Bilibili suggestion cards from extension |
+| GET | `/api/bilibili/thumbnail` | Proxy Bilibili thumbnails |
+| GET | `/api/navigation` | Classify a URL (allow/redirect/block) |
+| POST | `/api/session` | Update auth state |
+
+## Development
 
 ```bash
-npm test
-npm start
-npm run doctor
+npm test              # unit + E2E tests
+npm run doctor        # check dependencies
+npm start             # start the server
+npm run e2e-login     # launch browser for YouTube/Bilibili login
 ```
+
+Tests use Node's built-in test runner (`node:test`). No test framework to install.
+
+E2E tests launch a real Chromium instance with the extension loaded, seed the app with fixture data, and exercise the full flow through Chrome DevTools Protocol. If no DevTools endpoint is found, the test helper starts one.
+
+### E2E login setup
+
+Bilibili stacked subtitle tests require a logged-in browser profile. Run once before the E2E tests:
+
+```bash
+npm start &           # the app must be running
+npm run e2e-login     # opens a browser, log into YouTube and Bilibili, press Enter to save
+```
+
+This saves the profile to a temp directory that E2E tests copy on each run. The profile persists across test runs until you clear it. To use a specific profile directory, set `INTENT_VIDEO_E2E_PROFILE`:
+
+```bash
+INTENT_VIDEO_E2E_PROFILE=/path/to/your/chromium-profile npm test
+```
+
+## License
+
+MIT

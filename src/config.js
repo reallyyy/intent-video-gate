@@ -1,5 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { commandExists } from "./process.js";
 import { paths, useProjectLocalPaths } from "./paths.js";
+
+const COOKIE_BROWSER_CANDIDATES = ["chromium", "brave", "google-chrome", "firefox"];
 
 export const defaultConfig = {
   port: 47231,
@@ -24,9 +27,9 @@ export const defaultConfig = {
     mode: "ai-filtered-shelf",
     maxCollected: 80,
     feedSize: 20,
-    youtubeCookieBrowser: "chromium:/home/camel/snap/chromium/common/chromium",
+    youtubeCookieBrowser: "",
     youtubeRecommendationUrl: "https://www.youtube.com/feed/recommended",
-    bilibiliCookieBrowser: "chromium:/home/camel/snap/chromium/common/chromium",
+    bilibiliCookieBrowser: "",
     bilibiliRecommendationUrl: "https://www.bilibili.com/v/popular/all"
   },
   blockKeywords: ["warhammer", "战锤", "星际道士", "道士", "sora", "B站AI创作大赛"],
@@ -35,6 +38,13 @@ export const defaultConfig = {
     maxDefaultDurationSeconds: 7200
   }
 };
+
+export async function detectCookieBrowser() {
+  for (const candidate of COOKIE_BROWSER_CANDIDATES) {
+    if (await commandExists(candidate)) return candidate;
+  }
+  return "";
+}
 
 export async function ensureDirs() {
   try {
@@ -50,15 +60,23 @@ export async function ensureDirs() {
 
 export async function loadConfig() {
   await ensureDirs();
+  let saved;
   try {
     const raw = await readFile(paths.configFile, "utf8");
-    const parsed = JSON.parse(raw);
-    return mergeConfig(defaultConfig, parsed);
+    saved = JSON.parse(raw);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     await writeFile(paths.configFile, JSON.stringify(defaultConfig, null, 2) + "\n");
-    return defaultConfig;
+    saved = {};
   }
+  const config = mergeConfig(defaultConfig, saved);
+  if (!config.suggestions.youtubeCookieBrowser) {
+    config.suggestions.youtubeCookieBrowser = await detectCookieBrowser();
+  }
+  if (!config.suggestions.bilibiliCookieBrowser) {
+    config.suggestions.bilibiliCookieBrowser = await detectCookieBrowser();
+  }
+  return config;
 }
 
 function mergeConfig(base, override) {
