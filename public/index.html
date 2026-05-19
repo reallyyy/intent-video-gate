@@ -20,10 +20,17 @@
         </div>
       </header>
       <section class="keyword-panel" aria-label="Blocked words">
-        <span class="keyword-label">Blocked words</span>
+        <div class="keyword-heading">
+          <span class="keyword-label">Blocked words</span>
+          <span id="keywordCount" class="keyword-count"></span>
+        </div>
         <div id="keywordChips" class="keyword-chips"></div>
         <input id="keywordInput" autocomplete="off" placeholder="Add word">
-        <button id="addKeyword" type="button" class="secondary">Add</button>
+        <div class="keyword-actions">
+          <button id="addKeyword" type="button" class="secondary">Add</button>
+          <button id="clearKeywords" type="button" class="secondary">Clear</button>
+          <button id="restoreKeywords" type="button" class="secondary">Restore defaults</button>
+        </div>
       </section>
       <section id="player" class="player" hidden>
         <iframe id="playerFrame" title="Video player" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeYtdlpJson } from "../src/video.js";
+import { englishCapableBilibiliSubtitleTracks, normalizeYtdlpJson } from "../src/video.js";
 
 test("normalizes yt-dlp video JSON", () => {
   const item = normalizeYtdlpJson({
@@ -18,3 +18,16 @@ test("normalizes yt-dlp video JSON", () => {
   assert.equal(item.durationSeconds, 321);
 });
 
+test("detects English-capable Bilibili subtitle tracks", () => {
+  const tracks = [
+    { language: "zh-CN", label: "中文（自动生成）" },
+    { language: "en-US", label: "English" },
+    { language: "ai-zh", label: "中英双语字幕" },
+    { language: "zh-Hant", label: "繁體中文" }
+  ];
+
+  assert.deepEqual(
+    englishCapableBilibiliSubtitleTracks(tracks).map((track) => track.label),
+    ["English", "中英双语字幕"]
+  );
+});

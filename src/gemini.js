@@ -19,6 +19,18 @@ export async function classifyCandidates({ intent, candidates, config, preferenc
   return candidates.map((candidate) => blocked(candidate, `AI unavailable: ${fallbackParsed.error || parsed.error}`));
 }
 
+export async function generateBilibiliSearchQueries({ intent, blockKeywords = [], approved = [], rejectedBilibili = [], config }) {
+  if (!intent || !intent.trim()) return [];
+  const prompt = buildBilibiliSearchQueryPrompt({ intent, blockKeywords, approved, rejectedBilibili });
+  const primary = await callGemini(prompt, config.gemini.model, config);
+  const parsed = parseSearchQueryResult(primary);
+  if (parsed.ok) return parsed.queries;
+
+  const fallback = await callGemini(prompt, config.gemini.fallbackModel, config);
+  const fallbackParsed = parseSearchQueryResult(fallback);
+  return fallbackParsed.ok ? fallbackParsed.queries : [];
+}
+
 export async function refineFilterForVideo({ intent, video, messages, config }) {
   if (!intent || !intent.trim()) throw new Error("No active filter prompt.");
   if (!video?.id) throw new Error("Unknown video.");
@@ -68,6 +80,42 @@ Return only valid JSON, no markdown, with this shape:
 
 Candidates:
 ${JSON.stringify(compact, null, 2)}`;
+}
+
+export function buildBilibiliSearchQueryPrompt({ intent, blockKeywords = [], approved = [], rejectedBilibili = [] }) {
+  const compactApproved = approved.slice(0, 16).map((item) => ({
+    platform: item.platform,
+    title: item.title || item.gate?.safeTitle || "",
+    uploader: item.uploader || ""
+  }));
+  const compactRejected = rejectedBilibili.slice(0, 16).map((item) => ({
+    title: item.title || "",
+    uploader: item.uploader || "",
+    reason: item.gate?.reason || ""
+  }));
+  return `Generate Bilibili search queries for a high-quality video recommendation system.
+The user's filter text is:
+${intent}
+
+Local block keywords that must be avoided:
+${JSON.stringify(blockKeywords, null, 2)}
+
+Currently approved videos that represent useful taste signals:
+${JSON.stringify(compactApproved, null, 2)}
+
+Bilibili candidates that were rejected, to avoid repeating the same bad pool:
+${JSON.stringify(compactRejected, null, 2)}
+
+Return only valid JSON, no markdown, with this shape:
+{"queries":["short search query"]}
+
+Rules:
+- Generate 3 to 6 concise Bilibili search queries.
+- Prefer Chinese search terms when they would work better on Bilibili.
+- Bilibili videos must have subtitle or CC tracks because the watch page shows stacked original + English subtitles.
+- Favor subtitle-rich query terms such as CC字幕, 双语字幕, 中英字幕, 英文字幕, or topic-specific equivalents when they still match the user's filter.
+- Search for high-signal educational, documentary, technical, music, culture, analysis, or practical content matching the user's filter.
+- Do not include blocked keywords, low-effort entertainment, AI slop, reaction clips, gossip, gaming, or broad clickbait terms.`;
 }
 
 function buildFilterRefinementPrompt(intent, video, messages) {
@@ -160,6 +208,22 @@ export function parseGeminiResult(result) {
   return { ok: true, decisions: inner.decisions };
 }
 
+export function parseSearchQueryResult(result) {
+  const outer = parseOuterResponse(result);
+  if (!outer.ok) return outer;
+  let inner;
+  try {
+    inner = JSON.parse(outer.text);
+  } catch {
+    return { ok: false, error: "gemini response was not valid search query JSON" };
+  }
+  const queries = Array.isArray(inner.queries)
+    ? normalizeSearchQueries(inner.queries)
+    : [];
+  if (!queries.length) return { ok: false, error: "queries array missing" };
+  return { ok: true, queries };
+}
+
 export function parseFilterRefinementResult(result) {
   const outer = parseOuterResponse(result);
   if (!outer.ok) return outer;
@@ -224,4 +288,13 @@ function blocked(candidate, reason) {
       safeTitle: candidate.title || "Blocked item"
     }
   };
+}
+
+function normalizeSearchQueries(values) {
+  return [...new Set(values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .map((value) => value.replace(/\s+/g, " ").slice(0, 80))
+    .filter((value) => value.length >= 2))]
+    .slice(0, 6);
 }

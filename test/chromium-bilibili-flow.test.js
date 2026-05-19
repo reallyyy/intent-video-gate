@@ -1,7 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { APP, closeTarget, evaluate, listTargets, openAppPage, setupE2E, waitFor } from "./e2e-helper.js";
+
+async function injectBilibiliCookies(page) {
+  const cookiePath = process.env.INTENT_VIDEO_BILIBILI_COOKIES || "/tmp/ivg-bilibili-cookies.json";
+  let cookies;
+  try {
+    cookies = JSON.parse(await readFile(cookiePath, "utf8"));
+  } catch {
+    return;
+  }
+  for (const cookie of cookies) {
+    await page.call("Network.setCookie", {
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path || "/",
+      secure: cookie.secure ?? true,
+      httpOnly: cookie.httpOnly ?? false,
+      sameSite: cookie.sameSite || "Lax"
+    });
+  }
+}
 
 test("approved Bilibili click uses current Chromium tab and bare native watch page", { timeout: 90000 }, async () => {
   const e2e = await setupE2E();
@@ -12,6 +33,7 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
     deviceScaleFactor: 1,
     mobile: false
   });
+  await injectBilibiliCookies(page);
 
   try {
     await waitFor(page, `document.querySelectorAll(".card .watch").length > 0`, 30000);
@@ -147,6 +169,32 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
     assert.equal(audit.htmlOverflow, "hidden");
     assert.equal(audit.scrollY, 0);
 
+    await ensureBilibiliPlayback(page);
+    try {
+      await waitFor(page, stackedSubtitleReadyExpression(), 45000);
+    } catch (error) {
+      const availability = await evaluate(page, nativeBilibiliSubtitleAvailabilityExpression());
+      if (availability.loginRequired && !availability.hasEnglishOption) {
+        assert.fail([
+          "Bilibili native stacked English subtitles are login-gated in this browser profile.",
+          "Run this E2E with a logged-in Bilibili Chromium/Brave profile, for example:",
+          "  INTENT_VIDEO_E2E_PROFILE=/path/to/logged-in/user-data-dir npm test -- test/chromium-bilibili-flow.test.js",
+          "or start a logged-in browser with remote debugging and set CHROMIUM_DEBUG_URL.",
+          `Availability: ${JSON.stringify(availability)}`,
+          `Original wait error: ${error.message}`
+        ].join("\n"));
+      }
+      throw error;
+    }
+    const stackedSubtitles = await evaluate(page, stackedSubtitleAuditExpression());
+    assert.equal(stackedSubtitles.status, "ready", `extension should mark native stacked subtitles ready: ${JSON.stringify(stackedSubtitles)}`);
+    assert.ok(stackedSubtitles.sourceText, `source subtitle text should be visible: ${JSON.stringify(stackedSubtitles)}`);
+    assert.ok(stackedSubtitles.englishText, `English subtitle text should be visible: ${JSON.stringify(stackedSubtitles)}`);
+    assert.notEqual(stackedSubtitles.sourceText, stackedSubtitles.englishText);
+    assert.equal(stackedSubtitles.sourceHasCjk, true, `source subtitle should contain CJK text: ${JSON.stringify(stackedSubtitles)}`);
+    assert.equal(stackedSubtitles.englishHasLatin, true, `English subtitle should contain Latin words: ${JSON.stringify(stackedSubtitles)}`);
+    assert.ok(stackedSubtitles.englishTop > stackedSubtitles.sourceTop, `English subtitle should be stacked below source subtitle: ${JSON.stringify(stackedSubtitles)}`);
+
     const nativeControls = await exerciseNativePlayerControls(page);
     assert.equal(nativeControls.quality.visible, true, `quality control should be visible in the native player: ${JSON.stringify(nativeControls.quality)}`);
     assert.equal(nativeControls.quality.menuOpened, true, `quality control should open a selectable menu: ${JSON.stringify(nativeControls.quality)}`);
@@ -158,6 +206,8 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
     const html = await evaluate(page, "document.documentElement.outerHTML.slice(0, 200000)");
     await writeFile("/tmp/intent-video-bilibili-watch-e2e.png", Buffer.from(screenshot.data, "base64"));
     await writeFile("/tmp/intent-video-bilibili-watch-e2e.html", html, "utf8");
+    await writeFile("/tmp/intent-video-bilibili-stacked-subtitles-e2e.png", Buffer.from(screenshot.data, "base64"));
+    await writeFile("/tmp/intent-video-bilibili-stacked-subtitles-e2e.html", html, "utf8");
 
     await page.call("Runtime.evaluate", {
       awaitPromise: true,
@@ -236,10 +286,142 @@ async function exerciseNativePlayerControls(page) {
   const subtitle = await revealNativeControlMenu(page, {
     label: "subtitle",
     controlNeedles: ["subtitle", "字幕"],
-    optionNeedles: ["字幕", "关闭", "开启", "中文", "english", "自动"]
+    optionNeedles: ["字幕", "关闭", "开启", "中文", "english", "自动", "双语字幕"]
   });
 
   return { quality, playbackRate, subtitle };
+}
+
+async function ensureBilibiliPlayback(page) {
+  await evaluate(page, `(() => {
+    const video = document.querySelector("video");
+    if (!video) return false;
+    if (Number.isFinite(video.duration) && video.duration > 20 && video.currentTime < 8) {
+      video.currentTime = 12;
+    }
+    video.muted = true;
+    const play = video.play?.();
+    if (play && typeof play.catch === "function") play.catch(() => {});
+    return true;
+  })()`);
+  await moveMouseToPlayerControls(page);
+}
+
+function stackedSubtitleReadyExpression() {
+  return `(() => {
+    const audit = (${stackedSubtitleAuditExpression()});
+    return audit.status === "ready" &&
+      audit.sourceText &&
+      audit.englishText &&
+      audit.sourceHasCjk &&
+      audit.englishHasLatin &&
+      audit.englishTop > audit.sourceTop;
+  })()`;
+}
+
+function stackedSubtitleAuditExpression() {
+  return `(() => {
+    const normalize = (text) => String(text || "").replace(/\\r/g, "").split("\\n").map((line) => line.replace(/\\s+/g, " ").trim()).filter(Boolean).join("\\n").trim();
+    const hasCjk = (text) => /[\\u3400-\\u9fff]/.test(String(text || ""));
+    const hasLatin = (text) => /\\b[A-Za-z][A-Za-z'-]{2,}\\b/.test(String(text || ""));
+    const visible = (node) => {
+      if (!node) return false;
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || 1) > 0 &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.right > 0 &&
+        rect.bottom > 0 &&
+        rect.left < innerWidth &&
+        rect.top < innerHeight;
+    };
+    const lineFor = (selector) => {
+      const node = [...document.querySelectorAll(selector)].find(visible);
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { text: normalize(node.textContent), top: rect.top, left: rect.left, width: rect.width, height: rect.height, selector };
+    };
+    let source = lineFor(".bili-subtitle-x-subtitle-panel-major-group, [class*='subtitle-panel-major']");
+    let english = lineFor(".bili-subtitle-x-subtitle-panel-minor-group, [class*='subtitle-panel-minor']");
+    if (!(source?.text && english?.text)) {
+      const roots = [...document.querySelectorAll(".bpx-player-subtitle-wrap, .bili-subtitle-x-subtitle-panel, .bilibili-player-video-subtitle, [data-intent-video-player='true']")]
+        .filter(visible);
+      for (const root of roots) {
+        const rootRect = root.getBoundingClientRect();
+        const lines = normalize(root.innerText || root.textContent || "")
+          .split("\\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length >= 2 && !/^(字幕|关闭|开启|自动|设置|双语字幕)$/.test(line));
+        for (let i = 0; i < lines.length - 1; i += 1) {
+          if (hasCjk(lines[i]) && hasLatin(lines[i + 1])) {
+            source = { text: lines[i], top: rootRect.top, left: rootRect.left, width: rootRect.width, height: rootRect.height / 2, selector: "rendered-subtitle-root" };
+            english = { text: lines[i + 1], top: rootRect.top + Math.max(1, rootRect.height / 2), left: rootRect.left, width: rootRect.width, height: rootRect.height / 2, selector: "rendered-subtitle-root" };
+            break;
+          }
+          if (hasLatin(lines[i]) && hasCjk(lines[i + 1])) {
+            source = { text: lines[i + 1], top: rootRect.top + Math.max(1, rootRect.height / 2), left: rootRect.left, width: rootRect.width, height: rootRect.height / 2, selector: "rendered-subtitle-root" };
+            english = { text: lines[i], top: rootRect.top, left: rootRect.left, width: rootRect.width, height: rootRect.height / 2, selector: "rendered-subtitle-root" };
+            break;
+          }
+          for (let j = i + 2; j < Math.min(lines.length, i + 5); j += 1) {
+            if (hasCjk(lines[i]) && hasLatin(lines[j])) {
+              source = { text: lines[i], top: rootRect.top + i, left: rootRect.left, width: rootRect.width, height: 1, selector: "rendered-subtitle-nearby-lines" };
+              english = { text: lines[j], top: rootRect.top + j, left: rootRect.left, width: rootRect.width, height: 1, selector: "rendered-subtitle-nearby-lines" };
+              break;
+            }
+          }
+          if (source?.text && english?.text) break;
+        }
+        if (source?.text && english?.text) break;
+      }
+    }
+    if (!(source?.text && english?.text)) {
+      const leaves = [...document.querySelectorAll(".bpx-player-subtitle-wrap *, .bili-subtitle-x-subtitle-panel *, .bilibili-player-video-subtitle *, [data-intent-video-player='true'] *")]
+        .filter((node) => node.childElementCount === 0 && visible(node))
+        .map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { text: normalize(node.textContent), top: rect.top, left: rect.left, width: rect.width, height: rect.height, selector: typeof node.className === "string" ? node.className : node.tagName };
+        })
+        .filter((line) => line.text && !/^(字幕|关闭|开启|自动|设置|双语字幕)$/.test(line.text));
+      source = leaves.find((line) => hasCjk(line.text)) || source;
+      english = leaves.find((line) => hasLatin(line.text) && line.text !== source?.text && line.top > Number(source?.top || -1)) || english;
+    }
+    return {
+      status: document.documentElement.dataset.intentBilibiliSubtitles || "",
+      source: document.documentElement.dataset.intentBilibiliSubtitleSource || "",
+      sourceText: source?.text || "",
+      englishText: english?.text || "",
+      sourceTop: Number(source?.top || 0),
+      englishTop: Number(english?.top || 0),
+      sourceHasCjk: hasCjk(source?.text || ""),
+      englishHasLatin: hasLatin(english?.text || ""),
+      sourceSelector: source?.selector || "",
+      englishSelector: english?.selector || ""
+    };
+  })()`;
+}
+
+function nativeBilibiliSubtitleAvailabilityExpression() {
+  return `(() => {
+    const text = document.body?.innerText || "";
+    const nodes = [...document.querySelectorAll("[class*=subtitle], [aria-label*=字幕], [title*=字幕]")];
+    const combined = nodes.map((node) => [
+      node.textContent || "",
+      node.getAttribute("aria-label") || "",
+      node.getAttribute("title") || "",
+      typeof node.className === "string" ? node.className : ""
+    ].join(" ")).join("\\n");
+    return {
+      loginRequired: /登录可享|请先登录|登录/.test(text),
+      hasEnglishOption: /English|英文|英语/i.test(text) || /English|英文|英语/i.test(combined),
+      hasBilingualOption: /双语字幕|bilingual/i.test(text) || /双语字幕|bilingual/i.test(combined),
+      status: document.documentElement.dataset.intentBilibiliSubtitles || "",
+      bodyText: text.slice(0, 500)
+    };
+  })()`;
 }
 
 function nativeControlsReadyExpression() {
@@ -296,7 +478,9 @@ async function revealNativeControlMenu(page, { label, controlNeedles, optionNeed
     label,
     visible: true,
     menuOpened: menu.opened,
-    optionCount: menu.optionCount
+    optionCount: menu.optionCount,
+    hasEnglishOption: menu.hasEnglishOption,
+    hasBilingualOption: menu.hasBilingualOption
   };
 }
 
@@ -331,7 +515,9 @@ async function revealFromSettingsMenu(page, { label, controlNeedles, optionNeedl
     label,
     visible: menu.opened,
     menuOpened: menu.opened,
-    optionCount: menu.optionCount
+    optionCount: menu.optionCount,
+    hasEnglishOption: menu.hasEnglishOption,
+    hasBilingualOption: menu.hasBilingualOption
   };
 }
 
@@ -408,7 +594,9 @@ function menuFinderExpression(needles, control) {
       .filter((node) => visible(node) && isOutsideControl(node) && needles.some((needle) => textFor(node).includes(needle)));
     return {
       opened: options.length > 0,
-      optionCount: options.length
+      optionCount: options.length,
+      hasEnglishOption: options.some((node) => /english|英文|英语/i.test(textFor(node))),
+      hasBilingualOption: options.some((node) => /双语字幕|bilingual/i.test(textFor(node)))
     };
   })()`;
 }

@@ -12,7 +12,9 @@
     "*://myaccount.google.com/*",
     "*://passport.bilibili.com/*",
     "*://account.bilibili.com/*",
-    "http://127.0.0.1:47231/*"
+    "http://127.0.0.1:47231/*",
+    "https://api.bilibili.com/*",
+    "https://*.hdslb.com/*"
   ],
   "background": {
     "service_worker": "background.js"

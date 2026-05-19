@@ -257,3 +257,9 @@
 .intent-bilibili-watch .bpx-player-control-bottom {
   opacity: 1 !important;
 }
+
+.intent-bilibili-watch .bpx-player-subtitle-wrap,
+.intent-bilibili-watch .bilibili-player-video-subtitle {
+  white-space: pre-line !important;
+  line-height: 1.35 !important;
+}

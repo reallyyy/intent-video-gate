@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPrompt, parseFilterRefinementResult, parseGeminiResult } from "../src/gemini.js";
+import { buildBilibiliSearchQueryPrompt, buildPrompt, parseFilterRefinementResult, parseGeminiResult, parseSearchQueryResult } from "../src/gemini.js";
 
 test("parses Gemini outer JSON and inner decision JSON", () => {
   const result = {
@@ -28,6 +28,33 @@ test("parses Gemini outer JSON and inner decision JSON", () => {
 test("fails closed on invalid Gemini response JSON", () => {
   const parsed = parseGeminiResult({ ok: true, stdout: JSON.stringify({ response: "not json" }) });
   assert.equal(parsed.ok, false);
+});
+
+test("parses Gemini Bilibili search query JSON", () => {
+  const parsed = parseSearchQueryResult({
+    ok: true,
+    stdout: JSON.stringify({
+      response: JSON.stringify({
+        queries: [" 科技纪录片 ", "深度访谈", "科技纪录片"]
+      })
+    })
+  });
+
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(parsed.queries, ["科技纪录片", "深度访谈"]);
+});
+
+test("Bilibili search query prompt requires subtitle-friendly searches", () => {
+  const prompt = buildBilibiliSearchQueryPrompt({
+    intent: "thoughtful documentaries",
+    blockKeywords: [],
+    approved: [],
+    rejectedBilibili: []
+  });
+
+  assert.match(prompt, /subtitle or CC tracks/);
+  assert.match(prompt, /stacked original \+ English subtitles/);
+  assert.match(prompt, /CC字幕/);
 });
 
 test("classification prompt treats explicit music allowances as authoritative", () => {

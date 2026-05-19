@@ -1,4 +1,5 @@
 const APP = "http://127.0.0.1:47231";
+const FETCH_HOSTS = new Set(["api.bilibili.com"]);
 
 chrome.webNavigation.onBeforeNavigate.addListener((details) => {
   if (details.frameId !== 0) return;
@@ -13,6 +14,36 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
     { hostEquals: "passport.bilibili.com" },
     { hostEquals: "account.bilibili.com" }
   ]
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.type !== "intent:bgFetch") return false;
+  const url = String(message.url || "");
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    sendResponse({ ok: false, status: 0, error: "Invalid URL" });
+    return true;
+  }
+  if (!isAllowedFetchHost(parsed.hostname)) {
+    sendResponse({ ok: false, status: 0, error: "Fetch host is not allowed" });
+    return true;
+  }
+  fetch(parsed.href, {
+    method: "GET",
+    credentials: "include",
+    headers: {
+      accept: message.accept || "*/*"
+    }
+  })
+    .then(async (response) => sendResponse({
+      ok: response.ok,
+      status: response.status,
+      text: await response.text()
+    }))
+    .catch((error) => sendResponse({ ok: false, status: 0, error: error.message || String(error) }));
+  return true;
 });
 
 async function route(details) {
@@ -90,4 +121,8 @@ function isAuthUrl(host, path) {
     path.startsWith("/passport")
   )) return true;
   return false;
+}
+
+function isAllowedFetchHost(host) {
+  return FETCH_HOSTS.has(host) || host.endsWith(".hdslb.com");
 }

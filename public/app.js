@@ -5,6 +5,7 @@ const LOGIN_URLS = {
 };
 let savedFilter = "";
 let savedBlockKeywords = [];
+let defaultBlockKeywords = [];
 let blockKeywords = [];
 let busy = false;
 let feedRefreshing = false;
@@ -28,6 +29,7 @@ async function init() {
   const health = await api("/api/health");
   savedFilter = health.filter || "";
   savedBlockKeywords = normalizeKeywords(health.blockKeywords);
+  defaultBlockKeywords = normalizeKeywords(health.defaultBlockKeywords);
   blockKeywords = [...savedBlockKeywords];
   $("filter").value = savedFilter;
   renderKeywords();
@@ -45,13 +47,10 @@ async function applyFilter() {
   setBusy(true, "Saving prompt...");
   const data = await api("/api/filter", {
     method: "POST",
-    body: JSON.stringify({ filter: currentFilter(), blockKeywords })
+    body: JSON.stringify({ filter: currentFilter() })
   });
   savedFilter = data.filter || "";
-  savedBlockKeywords = normalizeKeywords(data.blockKeywords);
-  blockKeywords = [...savedBlockKeywords];
   $("filter").value = savedFilter;
-  renderKeywords();
   await loadFeed({ refresh: true });
 }
 
@@ -163,13 +162,17 @@ function currentFilter() {
 }
 
 function promptDirty() {
-  return currentFilter() !== savedFilter || keywordsChanged();
+  return currentFilter() !== savedFilter;
 }
 
 function updateControls() {
   const dirty = promptDirty();
   $("apply").disabled = busy || !dirty;
   $("refresh").disabled = busy || dirty;
+  $("addKeyword").disabled = busy || !$("keywordInput").value.trim();
+  $("clearKeywords").disabled = busy || !blockKeywords.length;
+  $("restoreKeywords").disabled = busy || arraysEqual(blockKeywords, defaultBlockKeywords);
+  $("keywordInput").disabled = busy;
   $("refresh").classList.toggle("loading", feedRefreshing);
   $("refresh").setAttribute("aria-busy", feedRefreshing ? "true" : "false");
   if (!busy && dirty) {
@@ -183,18 +186,16 @@ function normalizeKeywords(values) {
     .filter(Boolean))];
 }
 
-function keywordsChanged() {
-  return JSON.stringify(normalizeKeywords(blockKeywords)) !== JSON.stringify(normalizeKeywords(savedBlockKeywords));
-}
-
 function renderKeywords() {
   const chips = $("keywordChips");
   chips.textContent = "";
+  $("keywordCount").textContent = `${blockKeywords.length} active`;
   if (!blockKeywords.length) {
     const empty = document.createElement("span");
     empty.className = "keyword-empty";
     empty.textContent = "None";
     chips.append(empty);
+    updateControls();
     return;
   }
   for (const keyword of blockKeywords) {
@@ -203,24 +204,58 @@ function renderKeywords() {
     chip.className = "keyword-chip";
     chip.textContent = `${keyword} x`;
     chip.title = `Remove ${keyword}`;
-    chip.addEventListener("click", () => removeKeyword(keyword));
+    chip.disabled = busy;
+    chip.addEventListener("click", () => removeKeyword(keyword).catch((error) => setBusy(false, error.message)));
     chips.append(chip);
+  }
+  updateControls();
+}
+
+async function addKeyword() {
+  const value = $("keywordInput").value.trim();
+  if (!value) return;
+  $("keywordInput").value = "";
+  await saveBlockKeywords(normalizeKeywords([...blockKeywords, value]), "Blocked word saved. Refreshing feed...");
+}
+
+async function removeKeyword(keyword) {
+  await saveBlockKeywords(blockKeywords.filter((value) => value !== keyword), "Blocked word removed. Refreshing feed...");
+}
+
+async function clearKeywords() {
+  await saveBlockKeywords([], "Blocked words cleared. Refreshing feed...");
+}
+
+async function restoreKeywords() {
+  await saveBlockKeywords(defaultBlockKeywords, "Default blocked words restored. Refreshing feed...");
+}
+
+async function saveBlockKeywords(nextKeywords, message) {
+  const previousSaved = [...savedBlockKeywords];
+  const previousDraft = [...blockKeywords];
+  blockKeywords = normalizeKeywords(nextKeywords);
+  renderKeywords();
+  setBusy(true, message || "Saving blocked words...");
+  try {
+    const data = await api("/api/block-keywords", {
+      method: "PUT",
+      body: JSON.stringify({ blockKeywords })
+    });
+    savedBlockKeywords = normalizeKeywords(data.blockKeywords);
+    defaultBlockKeywords = normalizeKeywords(data.defaultBlockKeywords);
+    blockKeywords = [...savedBlockKeywords];
+    renderKeywords();
+    await loadFeed({ refresh: true });
+  } catch (error) {
+    savedBlockKeywords = previousSaved;
+    blockKeywords = previousDraft;
+    renderKeywords();
+    setBusy(false, error.message);
   }
 }
 
-function addKeyword() {
-  const value = $("keywordInput").value.trim();
-  if (!value) return;
-  blockKeywords = normalizeKeywords([...blockKeywords, value]);
-  $("keywordInput").value = "";
-  renderKeywords();
-  updateControls();
-}
-
-function removeKeyword(keyword) {
-  blockKeywords = blockKeywords.filter((value) => value !== keyword);
-  renderKeywords();
-  updateControls();
+function arraysEqual(left = [], right = []) {
+  return JSON.stringify(normalizeKeywords(left)) === JSON.stringify(normalizeKeywords(right));
 }
 
 function feedStatus(items, diagnostics = {}) {
@@ -229,9 +264,11 @@ function feedStatus(items, diagnostics = {}) {
   const candidates = countsText(diagnostics.candidatesByPlatform);
   const keywordBlocked = sumCounts(diagnostics.keywordBlockedByPlatform);
   const keywordMatches = countsText(diagnostics.keywordMatches);
+  const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.filter(Boolean) : [];
   if (approved) parts.push(`approved: ${approved}`);
   if (candidates) parts.push(`candidates: ${candidates}`);
   if (keywordBlocked) parts.push(`keyword-blocked: ${keywordBlocked}${keywordMatches ? ` (${keywordMatches})` : ""}`);
+  if (warnings.length) parts.push(`warning: ${warnings.join("; ")}`);
   if (diagnostics.cached) parts.push("cached");
   return parts.join(" · ");
 }
@@ -464,9 +501,12 @@ $("filter").addEventListener("keydown", (event) => {
   if (event.key === "Enter") applyFilter().catch((error) => setBusy(false, error.message));
 });
 $("filter").addEventListener("input", updateControls);
-$("addKeyword").addEventListener("click", addKeyword);
+$("addKeyword").addEventListener("click", () => addKeyword().catch((error) => setBusy(false, error.message)));
+$("clearKeywords").addEventListener("click", () => clearKeywords().catch((error) => setBusy(false, error.message)));
+$("restoreKeywords").addEventListener("click", () => restoreKeywords().catch((error) => setBusy(false, error.message)));
+$("keywordInput").addEventListener("input", updateControls);
 $("keywordInput").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") addKeyword();
+  if (event.key === "Enter") addKeyword().catch((error) => setBusy(false, error.message));
 });
 $("tuneClose").addEventListener("click", closeTune);
 $("tuneCancel").addEventListener("click", closeTune);

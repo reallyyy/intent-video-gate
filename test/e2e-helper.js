@@ -5,12 +5,13 @@ import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../src/paths.js";
+import { FEED_POLICY_VERSION } from "../src/store.js";
 
 export const APP = "http://127.0.0.1:47231/";
 const APP_HEALTH = `${APP}api/health`;
 const DEVTOOLS_PORTS = [9222, 9223, 9224, 9225, 9333];
 const BROWSER_CANDIDATES = ["chromium", "chromium-browser", "google-chrome", "brave-browser", "brave"];
-const BROWSER_PROFILE = "/tmp/intent-video-chromium-controls";
+const BROWSER_PROFILE = process.env.INTENT_VIDEO_E2E_PROFILE || "/tmp/intent-video-chromium-controls";
 const EXTENSION_PATH = new URL("../extension", import.meta.url).pathname;
 const E2E_FEED = [
   {
@@ -25,11 +26,11 @@ const E2E_FEED = [
   {
     id: "e2e-bilibili-player",
     platform: "bilibili",
-    title: "Bilibili player E2E video",
+    title: "Bilibili subtitle E2E video",
     uploader: "Bilibili",
     durationSeconds: 465,
     thumbnail: "",
-    url: "https://www.bilibili.com/video/BV11mFLziEyP"
+    url: "https://www.bilibili.com/video/BV11w37zNEAh"
   }
 ];
 
@@ -127,6 +128,15 @@ export async function setupRefreshE2E() {
         durationSeconds: 60,
         thumbnail: "",
         url: "https://www.youtube.com/watch?v=stale"
+      },
+      {
+        id: "bilibili:e2e-stale",
+        platform: "bilibili",
+        title: "Stale Bilibili cached suggestion",
+        uploader: "Cache",
+        durationSeconds: 61,
+        thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-stale.jpg",
+        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY"
       }
     ],
     suggestions: [
@@ -137,7 +147,7 @@ export async function setupRefreshE2E() {
         uploader: "Cache",
         durationSeconds: 61,
         thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-stale.jpg",
-        url: "https://www.bilibili.com/video/BV1stale"
+        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY"
       }
     ]
   });
@@ -228,6 +238,7 @@ async function writeE2ECache(file, { feed = E2E_FEED, suggestions = E2E_FEED } =
   await writeFile(file, `${JSON.stringify({
     suggestions,
     feed,
+    feedPolicyVersion: FEED_POLICY_VERSION,
     updatedAt: new Date().toISOString(),
     feedUpdatedAt: new Date().toISOString()
   }, null, 2)}\n`, "utf8");
@@ -250,7 +261,11 @@ async function writeFakeRefreshTools() {
 const promptIndex = process.argv.indexOf("-p");
 const prompt = promptIndex >= 0 ? process.argv[promptIndex + 1] || "" : "";
 const marker = "Candidates:";
-const candidatesText = prompt.includes(marker) ? prompt.slice(prompt.lastIndexOf(marker) + marker.length).trim() : "[]";
+if (!prompt.includes(marker)) {
+  process.stdout.write(JSON.stringify({ response: JSON.stringify({ queries: ["高质量纪录片"] }) }));
+  process.exit(0);
+}
+const candidatesText = prompt.slice(prompt.lastIndexOf(marker) + marker.length).trim();
 const candidates = JSON.parse(candidatesText);
 const decisions = candidates.map((candidate) => ({
   id: candidate.id,
@@ -264,7 +279,7 @@ process.stdout.write(JSON.stringify({ response: JSON.stringify({ decisions }) })
 `, "utf8");
   await writeFile(ytdlp, `#!/usr/bin/env node
 const args = process.argv.slice(2);
-const target = args[args.length - 1] || "";
+const target = args.find((arg) => arg.startsWith("bilisearch") || arg.includes("bilibili.com") || arg.includes("youtube.com")) || "";
 const youtubeItems = [
   {
     id: "yt-refresh-1",
@@ -285,16 +300,16 @@ const youtubeItems = [
 ];
 const bilibiliItems = [
   {
-    id: "BV11mFLziEyP",
+    id: "BV1S34y1p7ZU",
     title: "Bilibili refreshed E2E video",
     uploader: "Bilibili",
     duration: 465,
     thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-refresh.jpg",
-    webpage_url: "https://www.bilibili.com/video/BV11mFLziEyP"
+    webpage_url: "https://www.bilibili.com/video/BV1S34y1p7ZU"
   }
 ];
 if (args.includes("--flat-playlist")) {
-  const items = target.includes("bilibili.com") ? bilibiliItems : youtubeItems;
+  const items = target.includes("bilibili.com") || target.startsWith("bilisearch") ? bilibiliItems : youtubeItems;
   process.stdout.write(items.map((item) => JSON.stringify(item)).join("\\n") + "\\n");
   process.exit(0);
 }
@@ -480,6 +495,7 @@ async function currentExtensionProfile() {
   const profile = await mkdtemp(join(tmpdir(), "intent-video-e2e-profile-"));
   try {
     await access(BROWSER_PROFILE);
+    console.error(`# Using Chromium E2E profile seed: ${BROWSER_PROFILE}`);
     await cp(BROWSER_PROFILE, profile, {
       recursive: true,
       force: true,

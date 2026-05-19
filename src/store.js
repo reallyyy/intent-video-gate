@@ -2,6 +2,8 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { paths } from "./paths.js";
 import { ensureDirs } from "./config.js";
 
+export const FEED_POLICY_VERSION = "bilibili-english-subtitles-v1";
+
 export async function appendHistory(entry) {
   await ensureDirs();
   const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
@@ -62,6 +64,17 @@ export async function readCachedFeed() {
   }
 }
 
+export async function readCachedFeedPolicy() {
+  try {
+    const raw = await readFile(paths.cacheFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return String(parsed.feedPolicyVersion || "");
+  } catch (error) {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
 export async function writeCachedFeed(feed) {
   await ensureDirs();
   let current = {};
@@ -71,6 +84,7 @@ export async function writeCachedFeed(feed) {
     if (error.code !== "ENOENT") throw error;
   }
   current.feed = feed;
+  current.feedPolicyVersion = FEED_POLICY_VERSION;
   current.feedUpdatedAt = new Date().toISOString();
   await writeFile(paths.cacheFile, JSON.stringify(current, null, 2) + "\n");
 }
@@ -94,6 +108,19 @@ export async function readBlockKeywords(defaults = []) {
     if (error.code === "ENOENT") return normalizeList(defaults);
     throw error;
   }
+}
+
+export async function writeBlockKeywords(blockKeywords) {
+  await ensureDirs();
+  let current = {};
+  try {
+    current = JSON.parse(await readFile(paths.configFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  current.blockKeywords = normalizeList(blockKeywords);
+  await writeFile(paths.configFile, JSON.stringify(current, null, 2) + "\n");
+  return current.blockKeywords;
 }
 
 export async function writeFilter(filter, blockKeywords) {

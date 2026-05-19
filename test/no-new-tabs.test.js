@@ -25,3 +25,18 @@ test("extension content script parses", async () => {
   const source = await readFile(join(root, "extension/content.js"), "utf8");
   assert.doesNotThrow(() => new vm.Script(source));
 });
+
+test("extension uses Bilibili native subtitles without Google Translate", async () => {
+  const [manifest, background, content] = await Promise.all([
+    readFile(join(root, "extension/manifest.json"), "utf8"),
+    readFile(join(root, "extension/background.js"), "utf8"),
+    readFile(join(root, "extension/content.js"), "utf8")
+  ]);
+
+  assert.equal(manifest.includes("translate.googleapis.com"), false);
+  assert.equal(background.includes("translate.googleapis.com"), false);
+  assert.equal(content.includes("translate.googleapis.com"), false);
+  assert.match(content, /detectVisibleStackedBilibiliSubtitles/);
+  assert.match(content, /missing-english/);
+  assert.match(content, /isEnglishCapableBilibiliSubtitleTrack/);
+});
