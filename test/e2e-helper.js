@@ -460,7 +460,7 @@ async function launchBrowser() {
   const command = await findBrowserCommand();
   const port = await availableDevtoolsPort();
   const devtoolsUrl = `http://127.0.0.1:${port}`;
-  const profile = await currentExtensionProfile();
+  const { path: profile, owned } = await currentExtensionProfile();
   const child = spawn(command, [
     "--password-store=basic",
     "--remote-debugging-address=127.0.0.1",
@@ -486,12 +486,21 @@ async function launchBrowser() {
     devtoolsUrl,
     cleanup: async () => {
       await stopProcess(child);
-      await rm(profile, { recursive: true, force: true });
+      if (owned) await rm(profile, { recursive: true, force: true });
     }
   };
 }
 
 async function currentExtensionProfile() {
+  if (process.env.INTENT_VIDEO_E2E_PROFILE) {
+    try {
+      await access(BROWSER_PROFILE);
+      console.error(`# Using Chromium E2E profile directly: ${BROWSER_PROFILE}`);
+      return { path: BROWSER_PROFILE, owned: false };
+    } catch {
+      console.error(`# INTENT_VIDEO_E2E_PROFILE not found: ${BROWSER_PROFILE}, using fresh profile`);
+    }
+  }
   const profile = await mkdtemp(join(tmpdir(), "intent-video-e2e-profile-"));
   try {
     await access(BROWSER_PROFILE);
@@ -505,7 +514,7 @@ async function currentExtensionProfile() {
   } catch {
     // A fresh profile is still useful for tests that do not require account state.
   }
-  return profile;
+  return { path: profile, owned: true };
 }
 
 async function findBrowserCommand() {

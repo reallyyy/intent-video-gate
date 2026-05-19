@@ -1,8 +1,22 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { commandExists } from "./process.js";
 import { paths, useProjectLocalPaths } from "./paths.js";
 
 const COOKIE_BROWSER_CANDIDATES = ["chromium", "brave", "google-chrome", "firefox"];
+
+const SNAP_BROWSER_PROFILES = {
+  chromium: join(homedir(), "snap", "chromium", "common", "chromium"),
+  firefox: join(homedir(), "snap", "firefox", "common", ".mozilla", "firefox")
+};
+
+const XDG_BROWSER_PROFILES = {
+  chromium: join(homedir(), ".config", "chromium"),
+  "google-chrome": join(homedir(), ".config", "google-chrome"),
+  brave: join(homedir(), ".config", "BraveSoftware", "Brave-Browser"),
+  firefox: join(homedir(), ".mozilla", "firefox")
+};
 
 export const defaultConfig = {
   port: 47231,
@@ -41,9 +55,26 @@ export const defaultConfig = {
 
 export async function detectCookieBrowser() {
   for (const candidate of COOKIE_BROWSER_CANDIDATES) {
-    if (await commandExists(candidate)) return candidate;
+    if (!(await commandExists(candidate))) continue;
+    const snapProfile = SNAP_BROWSER_PROFILES[candidate];
+    if (snapProfile && await directoryExists(snapProfile)) {
+      return `${candidate}:${snapProfile}`;
+    }
+    const xdgProfile = XDG_BROWSER_PROFILES[candidate];
+    if (xdgProfile && await directoryExists(xdgProfile)) {
+      return candidate;
+    }
+    return candidate;
   }
   return "";
+}
+
+async function directoryExists(path) {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 export async function ensureDirs() {

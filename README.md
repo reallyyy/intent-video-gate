@@ -150,18 +150,19 @@ E2E tests launch a real Chromium instance with the extension loaded, seed the ap
 
 ### E2E login setup
 
-Bilibili stacked subtitle tests require a logged-in browser profile. Run once before the E2E tests:
+Bilibili stacked subtitle tests require a logged-in browser profile. Run the login helper to detect your browser profile or create one:
 
 ```bash
-npm start &           # the app must be running
-npm run e2e-login     # opens a browser, log into YouTube and Bilibili, press Enter to save
+npm run e2e-login
 ```
 
-This saves the profile to a temp directory that E2E tests copy on each run. The profile persists across test runs until you clear it. To use a specific profile directory, set `INTENT_VIDEO_E2E_PROFILE`:
+If you already have a browser profile logged into YouTube and Bilibili (e.g. your regular Chromium profile), point the tests directly at it:
 
 ```bash
-INTENT_VIDEO_E2E_PROFILE=/path/to/your/chromium-profile npm test
+INTENT_VIDEO_E2E_PROFILE=~/.config/chromium npm test
 ```
+
+On systems where Chromium is installed via Snap, the profile is typically at `~/snap/chromium/common/chromium`. The login helper auto-detects this.
 
 ## License
 
