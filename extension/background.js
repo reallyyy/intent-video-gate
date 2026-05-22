@@ -1,5 +1,5 @@
 const APP = "http://127.0.0.1:47231";
-const FETCH_HOSTS = new Set(["api.bilibili.com"]);
+const FETCH_HOSTS = new Set(["api.bilibili.com", "127.0.0.1", "localhost", "aisubtitle.hdslb.com"]);
 
 chrome.webNavigation.onBeforeNavigate.addListener((details) => {
   if (details.frameId !== 0) return;
@@ -17,7 +17,13 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "intent:bgFetch") return false;
+  if (!message) return false;
+  if (message.type === "intent:relayCookies") {
+    sendBilibiliCookies();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message.type !== "intent:bgFetch") return false;
   const url = String(message.url || "");
   let parsed;
   try {
@@ -30,19 +36,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: false, status: 0, error: "Fetch host is not allowed" });
     return true;
   }
-  fetch(parsed.href, {
-    method: "GET",
+  const fetchOpts = {
+    method: message.method || "GET",
     credentials: "include",
     headers: {
       accept: message.accept || "*/*"
     }
-  })
-    .then(async (response) => sendResponse({
-      ok: response.ok,
-      status: response.status,
-      text: await response.text()
-    }))
-    .catch((error) => sendResponse({ ok: false, status: 0, error: error.message || String(error) }));
+  };
+  if (message.body) {
+    fetchOpts.headers["content-type"] = message.contentType || "application/json";
+    fetchOpts.body = typeof message.body === "string" ? message.body : JSON.stringify(message.body);
+  }
+  fetch(parsed.href, fetchOpts)
+    .then(async (response) => {
+      sendResponse({
+        ok: response.ok,
+        status: response.status,
+        text: await response.text()
+      });
+    })
+    .catch((error) => {
+      console.error("[intent-video] bgFetch FAILED:", url.substring(0, 60), error.message || String(error));
+      sendResponse({ ok: false, status: 0, error: error.message || String(error) });
+    });
   return true;
 });
 
@@ -126,3 +142,49 @@ function isAuthUrl(host, path) {
 function isAllowedFetchHost(host) {
   return FETCH_HOSTS.has(host) || host.endsWith(".hdslb.com");
 }
+
+function sendBilibiliCookies() {
+  const domains = ["bilibili.com", ".bilibili.com", "www.bilibili.com", "bilibili.cn", ".bilibili.cn"];
+  let allCookies = [];
+  let pending = domains.length;
+  for (const domain of domains) {
+    chrome.cookies.getAll({ domain }, (cookies) => {
+      if (chrome.runtime.lastError) {
+        console.error("[intent-video] cookie error:", chrome.runtime.lastError);
+      }
+      if (cookies && cookies.length) allCookies.push(...cookies);
+      pending--;
+      if (pending > 0) return;
+      if (!allCookies.length) return;
+      const seen = new Set();
+      const header = allCookies
+        .filter((c) => {
+          const key = `${c.name}@${c.domain}@${c.path}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
+      if (!header) return;
+      fetch(`${APP}/api/bilibili-cookies`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cookie: header })
+      })
+        .catch(() => {
+          // The local app is often offline while the browser extension is still loaded.
+        });
+    });
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create("bilibili-cookies", { periodInMinutes: 2 });
+  sendBilibiliCookies();
+});
+chrome.runtime.onStartup.addListener(() => sendBilibiliCookies());
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "bilibili-cookies") sendBilibiliCookies();
+});
+sendBilibiliCookies();

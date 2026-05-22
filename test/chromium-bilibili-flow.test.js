@@ -46,6 +46,13 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
       })).find((item) => item.meta.includes("bilibili")) || null;
     })()`);
     assert.ok(selected, "feed must contain a Bilibili card for the browser flow test");
+    const selectedFeedItem = await evaluate(page, `fetch(${JSON.stringify(`${APP}api/feed`)})
+      .then((res) => res.json())
+      .then((data) => (data.items || []).find((item) => item.platform === "bilibili"))`);
+    assert.ok(
+      selectedFeedItem?.subtitleTranslation?.entries?.length > 0,
+      `Bilibili E2E feed item must already have cached subtitle translations before watch starts: ${JSON.stringify(selectedFeedItem)}`
+    );
 
     const beforePages = (await listTargets(e2e.devtoolsUrl)).filter((target) => target.type === "page").length;
     await page.call("Runtime.evaluate", {
@@ -176,8 +183,8 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
       const availability = await evaluate(page, nativeBilibiliSubtitleAvailabilityExpression());
       if (availability.loginRequired && !availability.hasEnglishOption) {
         assert.fail([
-          "Bilibili native stacked English subtitles are login-gated in this browser profile.",
-          "Run this E2E with a logged-in Bilibili Chromium/Brave profile, for example:",
+          "Bilibili stacked subtitles are login-gated or not pre-cached in this browser profile.",
+          "Run this E2E with a logged-in Bilibili Chromium/Brave profile and a feed item that already has cached translation.",
           "  INTENT_VIDEO_E2E_PROFILE=/path/to/logged-in/user-data-dir npm test -- test/chromium-bilibili-flow.test.js",
           "or start a logged-in browser with remote debugging and set CHROMIUM_DEBUG_URL.",
           `Availability: ${JSON.stringify(availability)}`,
@@ -187,7 +194,7 @@ test("approved Bilibili click uses current Chromium tab and bare native watch pa
       throw error;
     }
     const stackedSubtitles = await evaluate(page, stackedSubtitleAuditExpression());
-    assert.equal(stackedSubtitles.status, "ready", `extension should mark native stacked subtitles ready: ${JSON.stringify(stackedSubtitles)}`);
+    assert.equal(stackedSubtitles.status, "ready", `extension should mark stacked subtitles ready: ${JSON.stringify(stackedSubtitles)}`);
     assert.ok(stackedSubtitles.sourceText, `source subtitle text should be visible: ${JSON.stringify(stackedSubtitles)}`);
     assert.ok(stackedSubtitles.englishText, `English subtitle text should be visible: ${JSON.stringify(stackedSubtitles)}`);
     assert.notEqual(stackedSubtitles.sourceText, stackedSubtitles.englishText);
@@ -338,6 +345,33 @@ function stackedSubtitleAuditExpression() {
         rect.left < innerWidth &&
         rect.top < innerHeight;
     };
+
+    const overlay = document.getElementById("intent-video-subtitle-overlay");
+    if (overlay) {
+      const children = [...overlay.querySelectorAll("div")].filter((div) => {
+        const text = normalize(div.textContent || "");
+        return text.length >= 2 && (hasCjk(text) || hasLatin(text));
+      });
+      const cjkChild = children.find((div) => hasCjk(normalize(div.textContent || "")));
+      const latinChild = children.find((div) => hasLatin(normalize(div.textContent || "")) && div !== cjkChild);
+      if (cjkChild && latinChild) {
+        const cjkRect = cjkChild.getBoundingClientRect();
+        const latinRect = latinChild.getBoundingClientRect();
+        return {
+          status: document.documentElement.dataset.intentBilibiliSubtitles || "",
+          source: document.documentElement.dataset.intentBilibiliSubtitleSource || "",
+          sourceText: normalize(cjkChild.textContent),
+          englishText: normalize(latinChild.textContent),
+          sourceTop: cjkRect.top,
+          englishTop: latinRect.top,
+          sourceHasCjk: true,
+          englishHasLatin: true,
+          sourceSelector: "intent-video-subtitle-overlay",
+          englishSelector: "intent-video-subtitle-overlay"
+        };
+      }
+    }
+
     const lineFor = (selector) => {
       const node = [...document.querySelectorAll(selector)].find(visible);
       if (!node) return null;
@@ -347,7 +381,7 @@ function stackedSubtitleAuditExpression() {
     let source = lineFor(".bili-subtitle-x-subtitle-panel-major-group, [class*='subtitle-panel-major']");
     let english = lineFor(".bili-subtitle-x-subtitle-panel-minor-group, [class*='subtitle-panel-minor']");
     if (!(source?.text && english?.text)) {
-      const roots = [...document.querySelectorAll(".bpx-player-subtitle-wrap, .bili-subtitle-x-subtitle-panel, .bilibili-player-video-subtitle, [data-intent-video-player='true']")]
+      const roots = [...document.querySelectorAll(".bpx-player-subtitle-wrap, .bili-subtitle-x-subtitle-panel, .bilibili-player-video-subtitle")]
         .filter(visible);
       for (const root of roots) {
         const rootRect = root.getBoundingClientRect();
@@ -379,7 +413,7 @@ function stackedSubtitleAuditExpression() {
       }
     }
     if (!(source?.text && english?.text)) {
-      const leaves = [...document.querySelectorAll(".bpx-player-subtitle-wrap *, .bili-subtitle-x-subtitle-panel *, .bilibili-player-video-subtitle *, [data-intent-video-player='true'] *")]
+      const leaves = [...document.querySelectorAll(".bpx-player-subtitle-wrap *, .bili-subtitle-x-subtitle-panel *, .bilibili-player-video-subtitle *")]
         .filter((node) => node.childElementCount === 0 && visible(node))
         .map((node) => {
           const rect = node.getBoundingClientRect();

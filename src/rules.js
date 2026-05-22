@@ -45,7 +45,9 @@ export function classifyBrowserNavigation(input) {
     return { action: "ignore" };
   }
   const parsed = parseVideoUrl(input);
-  if (parsed) return { action: "redirect", video: parsed };
+  if (parsed) {
+    return { action: "redirect", video: parsed };
+  }
 
   const host = url.hostname.toLowerCase();
   const path = url.pathname.toLowerCase();

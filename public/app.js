@@ -9,11 +9,13 @@ let defaultBlockKeywords = [];
 let blockKeywords = [];
 let busy = false;
 let feedRefreshing = false;
+let feedLoading = false;
 let aiRunning = false;
 let tuneItem = null;
 let tuneMessages = [];
 let aiOptions = [];
 let selectedReasons = [];
+let feedProgressTimer = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -56,16 +58,22 @@ async function applyFilter() {
 
 async function loadFeed({ refresh = false } = {}) {
   feedRefreshing = refresh;
+  feedLoading = true;
   updateControls();
   setBusy(true, refresh ? "Refreshing approved videos..." : "Loading approved videos...");
+  startFeedProgressPolling();
   try {
     const data = await api(`/api/feed${refresh ? "?refresh=1" : ""}`);
     render(data.items || []);
     feedRefreshing = false;
+    feedLoading = false;
+    stopFeedProgressPolling();
     setBusy(false, feedStatus(data.items || [], data.diagnostics));
   } catch (error) {
     render([]);
     feedRefreshing = false;
+    feedLoading = false;
+    stopFeedProgressPolling();
     setBusy(false, error.message);
   }
 }
@@ -155,6 +163,28 @@ function setBusy(isBusy, text) {
   busy = isBusy;
   $("status").textContent = text || "";
   updateControls();
+}
+
+function startFeedProgressPolling() {
+  stopFeedProgressPolling();
+  feedProgressTimer = setInterval(() => {
+    updateFeedProgressStatus().catch(() => {});
+  }, 900);
+  updateFeedProgressStatus().catch(() => {});
+}
+
+function stopFeedProgressPolling() {
+  if (!feedProgressTimer) return;
+  clearInterval(feedProgressTimer);
+  feedProgressTimer = null;
+}
+
+async function updateFeedProgressStatus() {
+  if (!busy || !feedLoading) return;
+  const progress = await api("/api/feed-status");
+  if (!progress?.message) return;
+  const seconds = Math.max(0, Math.round(Number(progress.elapsedMs || 0) / 1000));
+  $("status").textContent = `${progress.message} ${seconds ? `(${seconds}s)` : ""}`.trim();
 }
 
 function currentFilter() {

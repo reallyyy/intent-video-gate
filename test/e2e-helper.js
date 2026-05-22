@@ -13,6 +13,27 @@ const DEVTOOLS_PORTS = [9222, 9223, 9224, 9225, 9333];
 const BROWSER_CANDIDATES = ["chromium", "chromium-browser", "google-chrome", "brave-browser", "brave"];
 const BROWSER_PROFILE = process.env.INTENT_VIDEO_E2E_PROFILE || "/tmp/intent-video-chromium-controls";
 const EXTENSION_PATH = new URL("../extension", import.meta.url).pathname;
+const E2E_BILIBILI_SUBTITLE_TRANSLATION = {
+  bvid: "BV11w37zNEAh",
+  translatedAt: "2026-05-22T00:00:00.000Z",
+  entries: [
+    { from: 0, to: 3600, content: "缓存中文字幕", translation: "Cached English subtitle" }
+  ]
+};
+const E2E_REFRESH_BILIBILI_SUBTITLE_TRANSLATION = {
+  bvid: "BV1S34y1p7ZU",
+  translatedAt: "2026-05-22T00:00:00.000Z",
+  entries: [
+    { from: 0, to: 3600, content: "刷新中文字幕", translation: "Refreshed English subtitle" }
+  ]
+};
+const E2E_STALE_BILIBILI_SUBTITLE_TRANSLATION = {
+  bvid: "BV1Gz4y1Q7AY",
+  translatedAt: "2026-05-22T00:00:00.000Z",
+  entries: [
+    { from: 0, to: 3600, content: "旧缓存中文字幕", translation: "Stale cached English subtitle" }
+  ]
+};
 const E2E_FEED = [
   {
     id: "e2e-youtube-lee-kuan-yew",
@@ -30,7 +51,8 @@ const E2E_FEED = [
     uploader: "Bilibili",
     durationSeconds: 465,
     thumbnail: "",
-    url: "https://www.bilibili.com/video/BV11w37zNEAh"
+    url: "https://www.bilibili.com/video/BV11w37zNEAh",
+    subtitleTranslation: E2E_BILIBILI_SUBTITLE_TRANSLATION
   }
 ];
 
@@ -136,7 +158,8 @@ export async function setupRefreshE2E() {
         uploader: "Cache",
         durationSeconds: 61,
         thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-stale.jpg",
-        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY"
+        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY",
+        subtitleTranslation: E2E_STALE_BILIBILI_SUBTITLE_TRANSLATION
       }
     ],
     suggestions: [
@@ -147,7 +170,8 @@ export async function setupRefreshE2E() {
         uploader: "Cache",
         durationSeconds: 61,
         thumbnail: "https://i0.hdslb.com/bfs/archive/e2e-stale.jpg",
-        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY"
+        url: "https://www.bilibili.com/video/BV1Gz4y1Q7AY",
+        subtitleTranslation: E2E_STALE_BILIBILI_SUBTITLE_TRANSLATION
       }
     ]
   });
@@ -235,9 +259,14 @@ async function writeE2EConfig(file, overrides = {}) {
 }
 
 async function writeE2ECache(file, { feed = E2E_FEED, suggestions = E2E_FEED } = {}) {
+  const subtitleTranslations = Object.fromEntries([...feed, ...suggestions]
+    .filter((item) => item.platform === "bilibili" && item.subtitleTranslation?.entries?.length)
+    .map((item) => [item.subtitleTranslation.bvid, item.subtitleTranslation]));
+  subtitleTranslations[E2E_REFRESH_BILIBILI_SUBTITLE_TRANSLATION.bvid] = E2E_REFRESH_BILIBILI_SUBTITLE_TRANSLATION;
   await writeFile(file, `${JSON.stringify({
     suggestions,
     feed,
+    subtitleTranslations,
     feedPolicyVersion: FEED_POLICY_VERSION,
     updatedAt: new Date().toISOString(),
     feedUpdatedAt: new Date().toISOString()

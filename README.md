@@ -9,7 +9,7 @@ The browser extension prevents direct browsing of YouTube and Bilibili. When you
 - **Gemini AI classification** -- each video candidate is evaluated against your intent filter text. Fail-closed: if the AI is unreachable, nothing passes through.
 - **Multi-platform feed** -- merges YouTube and Bilibili recommendations in a single page. YouTube comes from your signed-in recommendations via yt-dlp. Bilibili comes from the public API, yt-dlp, or cached suggestions.
 - **Keyword blocklist** -- pre-AI keyword filter removes candidates by title, uploader, or tag before they ever reach Gemini. Managed from the web UI.
-- **Bilibili English subtitle policy** -- Bilibili videos are only eligible when the Bilibili API reports an English-capable or bilingual subtitle track. Chinese-only AI subtitles are filtered out. The extension auto-activates bilingual subtitle mode on Bilibili watch pages.
+- **Bilibili stacked subtitles** -- Bilibili videos are eligible when the API reports usable English, bilingual, or Chinese AI subtitle tracks. Chinese-only subtitle tracks are translated server-side and rendered as a custom Chinese + English overlay on Bilibili watch pages.
 - **Short-lived watch grants** -- clicking "Watch" creates a time-limited grant (5 minutes by default) for that exact URL. The extension checks grants before allowing any YouTube/Bilibili navigation. Unauthorized navigation is redirected back to the app.
 - **Tune-out** -- every card has a "Tune out" button with two modes: manual (type a category to avoid) or AI-assisted (Gemini proposes clickable filter refinements based on the video's metadata).
 - **Bilibili suggestion collection** -- the extension collects Bilibili recommendation cards from signed-in browsing and sends them to the app for the next feed refresh.
@@ -104,19 +104,19 @@ The Node.js server at http://127.0.0.1:47231 handles:
 
 1. Reads your intent filter text and keyword blocklist.
 2. Collects candidates from YouTube recommendations (via yt-dlp with browser cookies) and Bilibili (via yt-dlp, the Bilibili API, or cached suggestions from the extension).
-3. Pre-filters Bilibili candidates by English subtitle availability using the Bilibili API.
+3. Pre-filters Bilibili candidates by usable subtitle availability using the Bilibili API.
 4. Pre-filters all candidates against the keyword blocklist.
 5. Sends remaining candidates to Gemini in batches for AI classification.
 6. If too few Bilibili videos pass, generates search queries via Gemini and searches Bilibili for more.
 7. Selects the final mixed feed (up to 20 YouTube + a proportional slice of Bilibili).
-8. Caches the approved feed for fast reloading.
+8. Pre-translates Chinese-only Bilibili subtitle tracks and caches the approved feed for fast reloading.
 
 ### Extension
 
 The Manifest V3 extension:
 
-- **background.js** -- intercepts all YouTube and Bilibili navigation via `chrome.webNavigation.onBeforeNavigate`. Checks the local app for grant status. Proxies Bilibili API requests from content scripts.
-- **content.js** -- injected on YouTube and Bilibili pages. Hides masthead, sidebar, comments, and recommendations. Activates Bilibili bilingual subtitles. Collects Bilibili recommendation cards and sends them to the app. Reports auth state.
+- **background.js** -- intercepts all YouTube and Bilibili navigation via `chrome.webNavigation.onBeforeNavigate`. Checks the local app for grant status, relays Bilibili cookies to the local server, and proxies Bilibili API requests from content scripts.
+- **content.js** -- injected on YouTube, Bilibili, and the local app page. Hides masthead, sidebar, comments, and recommendations. Syncs translated subtitles, renders the Bilibili stacked subtitle overlay, collects Bilibili recommendation cards, and reports auth state.
 - **focus.css** -- CSS that makes the player fill the viewport.
 
 ## API reference
@@ -132,6 +132,10 @@ The Manifest V3 extension:
 | POST | `/api/filter/refine-video` | AI-assisted filter refinement for a specific video |
 | POST | `/api/collect-bilibili` | Receive Bilibili suggestion cards from extension |
 | GET | `/api/bilibili/thumbnail` | Proxy Bilibili thumbnails |
+| GET | `/api/bilibili/subtitle-tracks` | Proxy Bilibili subtitle metadata with relayed cookies |
+| GET | `/api/bilibili/subtitle-json` | Proxy Bilibili subtitle JSON downloads |
+| GET | `/api/translated-subtitles` | Return cached translated subtitle entries for a Bilibili video |
+| POST | `/api/bilibili-cookies` | Receive relayed Bilibili cookies from the extension |
 | GET | `/api/navigation` | Classify a URL (allow/redirect/block) |
 | POST | `/api/session` | Update auth state |
 

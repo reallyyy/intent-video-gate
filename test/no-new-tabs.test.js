@@ -40,3 +40,10 @@ test("extension uses Bilibili native subtitles without Google Translate", async 
   assert.match(content, /missing-english/);
   assert.match(content, /isEnglishCapableBilibiliSubtitleTrack/);
 });
+
+test("extension fallback keeps direct Bilibili video navigation gated", async () => {
+  const background = await readFile(join(root, "extension/background.js"), "utf8");
+
+  assert.match(background, /path\.startsWith\("\/video\/"\)\) return "redirect"/);
+  assert.doesNotMatch(background, /path\.startsWith\("\/video\/"\)\) return "allow"/);
+});

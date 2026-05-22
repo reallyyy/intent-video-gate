@@ -111,9 +111,9 @@ Return only valid JSON, no markdown, with this shape:
 
 Rules:
 - Generate 3 to 6 concise Bilibili search queries.
-- Prefer Chinese search terms when they would work better on Bilibili.
-- Bilibili videos must have subtitle or CC tracks because the watch page shows stacked original + English subtitles.
-- Favor subtitle-rich query terms such as CC字幕, 双语字幕, 中英字幕, 英文字幕, or topic-specific equivalents when they still match the user's filter.
+- Translate the user's intent into Chinese search terms that would find native Chinese-language videos on Bilibili.
+- Search for original Chinese content (lectures, documentaries, analysis, culture, etc.) — NOT English-translated or bilingual content.
+- The system automatically overlays stacked Chinese + English subtitles, so do not bias queries toward pre-translated or bilingual material.
 - Search for high-signal educational, documentary, technical, music, culture, analysis, or practical content matching the user's filter.
 - Do not include blocked keywords, low-effort entertainment, AI slop, reaction clips, gossip, gaming, or broad clickbait terms.`;
 }
@@ -154,6 +154,62 @@ Preserve the user's original positive intent. Add only the minimum specific bloc
 
 Return only valid JSON, no markdown, with this shape:
 {"reply":"short response to user","video_summary":"short factual summary of relevant details","suggested_options":[{"reason":"reason user can choose","blocking_guidance":"short standalone blocking guidance line","proposed_filter":"complete updated filter prompt for this reason"}],"proposed_filter":"best default complete updated filter prompt"}`;
+}
+
+export async function translateSubtitleEntries(entries, config) {
+  if (!entries?.length) return [];
+  const CHUNK = 80;
+  const results = [];
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const chunk = entries.slice(i, i + CHUNK);
+    const translated = await translateChunk(chunk, config);
+    for (let j = 0; j < chunk.length; j++) {
+      results.push({
+        from: chunk[j].from,
+        to: chunk[j].to,
+        content: chunk[j].content,
+        translation: translated[j] || null
+      });
+    }
+  }
+  return results;
+}
+
+async function translateChunk(entries, config) {
+  const lines = entries.map((e) => e.content);
+  const prompt = buildSubtitleTranslationPrompt(lines);
+  const primary = await callGemini(prompt, config.gemini.model, config);
+  const parsed = parseTranslationResult(primary);
+  if (parsed.ok) return parsed.translations;
+  console.error("[translate] primary model failed for %d lines: %s", lines.length, parsed.error);
+
+  const fallback = await callGemini(prompt, config.gemini.fallbackModel, config);
+  const fallbackParsed = parseTranslationResult(fallback);
+  if (!fallbackParsed.ok) {
+    console.error("[translate] fallback model ALSO failed for %d lines: %s", lines.length, fallbackParsed.error);
+  }
+  return fallbackParsed.ok ? fallbackParsed.translations : lines.map(() => null);
+}
+
+export function buildSubtitleTranslationPrompt(lines) {
+  return `Translate these Chinese subtitle lines to English.
+Return only a JSON array of translated strings, in the same order.
+Do not add explanations, numbering, or extra formatting.
+
+${JSON.stringify(lines, null, 2)}`;
+}
+
+function parseTranslationResult(result) {
+  const outer = parseOuterResponse(result);
+  if (!outer.ok) return outer;
+  let parsed;
+  try {
+    parsed = JSON.parse(outer.text);
+  } catch {
+    return { ok: false, error: "translation response is not valid JSON" };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, error: "translation response is not an array" };
+  return { ok: true, translations: parsed.map(String) };
 }
 
 async function callGemini(prompt, model, config) {

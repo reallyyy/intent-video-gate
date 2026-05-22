@@ -6,7 +6,12 @@ const bilibiliSubtitleState = {
   metadataPromise: null,
   subtitleAvailable: false,
   englishSubtitleAvailable: false,
-  lastActivateAt: 0
+  subtitleTracks: [],
+  chineseJson: null,
+  englishJson: null,
+  bilingualSingleTrack: false,
+  overlayActive: false,
+  overlayElement: null
 };
 
 updateWatchStageSize();
@@ -16,6 +21,8 @@ detectAndReportAuth();
 hideDistractions();
 focusYouTubeWatch();
 focusBilibiliWatch();
+relayBilibiliCookies();
+syncSubtitleTranslations();
 setInterval(detectAndReportAuth, 2000);
 setInterval(hideDistractions, 1500);
 setInterval(focusYouTubeWatch, 1500);
@@ -23,6 +30,7 @@ setInterval(focusBilibiliWatch, 1500);
 setInterval(enhanceBilibiliStackedSubtitles, 700);
 setTimeout(collectSuggestions, 1800);
 setInterval(collectSuggestions, 15000);
+setInterval(relayBilibiliCookies, 5 * 60 * 1000);
 window.addEventListener("resize", () => {
   updateWatchStageSize();
   nudgePlayerResize();
@@ -31,6 +39,15 @@ window.visualViewport?.addEventListener("resize", () => {
   updateWatchStageSize();
   nudgePlayerResize();
 });
+
+function relayBilibiliCookies() {
+  if (!globalThis.chrome?.runtime?.sendMessage) return;
+  chrome.runtime.sendMessage({ type: "intent:relayCookies" }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error("[intent-video] relayBilibiliCookies error:", chrome.runtime.lastError.message);
+    }
+  });
+}
 
 function installPanel() {
   if (document.getElementById("intent-video-panel")) return;
@@ -41,6 +58,32 @@ function installPanel() {
   link.textContent = "Back to Intent Gate";
   panel.append(link);
   document.documentElement.append(panel);
+}
+
+async function syncSubtitleTranslations() {
+  if (location.protocol === "https:") return;
+  try {
+    const res = await fetch(`${APP}/api/feed`);
+    const data = await res.json();
+    const translations = {};
+    for (const item of (data.items || [])) {
+      if (item.subtitleTranslation) {
+        const bvid = item.url?.match(/BV[\w]+/)?.[0];
+        const entries = normalizeTranslationEntries(item.subtitleTranslation);
+        if (bvid && entries.length) translations[bvid] = entries;
+      }
+    }
+    if (Object.keys(translations).length) {
+      await new Promise(r => chrome.storage.local.set({ subtitleTranslations: translations }, r));
+    }
+  } catch (e) {
+    console.error("[intent-video] syncSubtitleTranslations failed:", e.message);
+  }
+}
+
+function normalizeTranslationEntries(value) {
+  const entries = Array.isArray(value) ? value : value?.entries;
+  return Array.isArray(entries) ? entries.filter((entry) => entry?.translation) : [];
 }
 
 function markPage() {
@@ -193,16 +236,15 @@ function enhanceBilibiliStackedSubtitles() {
   if (!isBilibiliWatchPage()) return;
   refreshBilibiliSubtitleMetadata();
 
-  const stacked = detectVisibleStackedBilibiliSubtitles();
-  if (stacked) {
-    document.documentElement.dataset.intentBilibiliSubtitles = "ready";
-    document.documentElement.dataset.intentBilibiliSubtitleSource = stacked.source;
+  if (bilibiliSubtitleState.overlayActive) {
+    updateBilibiliSubtitleOverlay();
     return;
   }
 
-  const activated = activateNativeBilibiliStackedSubtitles();
-  if (activated) {
-    document.documentElement.dataset.intentBilibiliSubtitles = "activating";
+  if (bilibiliSubtitleState.englishSubtitleAvailable && bilibiliSubtitleState.chineseJson && bilibiliSubtitleState.englishJson) {
+    startBilibiliSubtitleOverlay();
+    document.documentElement.dataset.intentBilibiliSubtitles = "ready";
+    document.documentElement.dataset.intentBilibiliSubtitleSource = "custom-overlay";
     return;
   }
 
@@ -220,21 +262,175 @@ function refreshBilibiliSubtitleMetadata() {
     bilibiliSubtitleState.metadataPromise = null;
     bilibiliSubtitleState.subtitleAvailable = false;
     bilibiliSubtitleState.englishSubtitleAvailable = false;
+    bilibiliSubtitleState.subtitleTracks = [];
+    bilibiliSubtitleState.chineseJson = null;
+    bilibiliSubtitleState.englishJson = null;
+    bilibiliSubtitleState.bilingualSingleTrack = false;
+    bilibiliSubtitleState.overlayActive = false;
+    if (bilibiliSubtitleState.overlayElement) {
+      bilibiliSubtitleState.overlayElement.remove();
+      bilibiliSubtitleState.overlayElement = null;
+    }
     document.documentElement.dataset.intentBilibiliSubtitles = "checking";
   }
   if (bilibiliSubtitleState.metadataPromise) return;
-  bilibiliSubtitleState.metadataPromise = fetchJsonViaBackground(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`)
-    .then((payload) => {
-      const tracks = Array.isArray(payload?.data?.subtitle?.list) ? payload.data.subtitle.list : [];
-      bilibiliSubtitleState.subtitleAvailable = tracks.length > 0;
-      bilibiliSubtitleState.englishSubtitleAvailable = tracks.some(isEnglishCapableBilibiliSubtitleTrack);
-      document.documentElement.dataset.intentBilibiliSubtitles = !tracks.length
-        ? "missing"
-        : bilibiliSubtitleState.englishSubtitleAvailable ? "waiting" : "missing-english";
-    })
-    .catch(() => {
+  bilibiliSubtitleState.metadataPromise = (async () => {
+    try {
+      let allTracks;
+      try {
+        const serverData = await fetchJsonViaBackground(`${APP}/api/bilibili/subtitle-tracks?bvid=${encodeURIComponent(bvid)}`);
+        allTracks = Array.isArray(serverData?.tracks) ? serverData.tracks : [];
+      } catch (e) {
+        console.error("[intent-video] server subtitle-tracks failed:", e.message || e);
+      }
+      if (!allTracks?.length) {
+        const payload = await fetchFromPage(`https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}${await bilibiliCidParam(bvid)}`, "application/json");
+        const tracks = Array.isArray(payload?.data?.subtitle?.subtitles) ? payload.data.subtitle.subtitles : [];
+        const fallback = Array.isArray(payload?.data?.subtitle?.list) ? payload.data.subtitle.list : [];
+        allTracks = tracks.length ? tracks : fallback;
+      }
+      bilibiliSubtitleState.subtitleTracks = allTracks;
+      bilibiliSubtitleState.subtitleAvailable = allTracks.length > 0;
+      const cachedTranslation = await cachedBilibiliTranslationEntries(bvid);
+      if (!bilibiliSubtitleState.subtitleAvailable && cachedTranslation.length) {
+        bilibiliSubtitleState.chineseJson = cachedTranslation.map((e) => ({
+          from: e.from,
+          to: e.to,
+          content: e.content
+        }));
+        bilibiliSubtitleState.englishJson = cachedTranslation.map((e) => ({
+          from: e.from,
+          to: e.to,
+          content: e.translation
+        }));
+        bilibiliSubtitleState.englishSubtitleAvailable = true;
+        bilibiliSubtitleState.bilingualSingleTrack = false;
+        document.documentElement.dataset.intentBilibiliSubtitles = "waiting";
+        return;
+      }
+      const englishTracks = allTracks.filter(isEnglishCapableBilibiliSubtitleTrack);
+      const chineseTracks = allTracks.filter((t) => /zh|中文|Chinese/i.test(`${t.lan || ""} ${t.lan_doc || ""}`));
+      const bilingualTracks = allTracks.filter((t) => /双语|bilingual|中英|英中/i.test(`${t.lan || ""} ${t.lan_doc || ""}`));
+      bilibiliSubtitleState.englishSubtitleAvailable = englishTracks.length > 0 || bilingualTracks.length > 0;
+      if (!bilibiliSubtitleState.subtitleAvailable) {
+        document.documentElement.dataset.intentBilibiliSubtitles = "missing";
+        return;
+      }
+      if (!bilibiliSubtitleState.englishSubtitleAvailable) {
+        document.documentElement.dataset.intentBilibiliSubtitles = "translating";
+        try {
+          let cached = cachedTranslation;
+          let cnBody = null;
+          const chineseTrackWithUrl = chineseTracks.find((t) => t.subtitle_url || t.url) ||
+            allTracks.find((t) => (t.subtitle_url || t.url) && !isEnglishCapableBilibiliSubtitleTrack(t));
+
+          if (!cached?.length) {
+            document.documentElement.dataset.intentBilibiliSubtitles = "missing-translation";
+            return;
+          }
+
+          if (!cnBody && chineseTrackWithUrl) {
+            cnBody = await downloadChineseSubtitleBody(chineseTrackWithUrl).catch(() => null);
+          }
+
+          bilibiliSubtitleState.chineseJson = cnBody || cached.map((e) => ({
+            from: e.from,
+            to: e.to,
+            content: e.content
+          }));
+          bilibiliSubtitleState.englishJson = cached.map((e) => ({
+            from: e.from,
+            to: e.to,
+            content: e.translation
+          }));
+          bilibiliSubtitleState.englishSubtitleAvailable = true;
+          bilibiliSubtitleState.bilingualSingleTrack = false;
+          document.documentElement.dataset.intentBilibiliSubtitles = "waiting";
+          return;
+        } catch (e) {
+          console.error("[intent-video] TRANSLATE FAIL: exception during translation for bvid=%s:", bvid, e);
+        }
+        document.documentElement.dataset.intentBilibiliSubtitles = "missing-english";
+        return;
+      }
+      const englishTrack = bilingualTracks[0] || englishTracks[0];
+      const chineseTrack = chineseTracks[0] || allTracks.find((t) => t !== englishTrack) || allTracks[0];
+      const tracksWithUrl = allTracks.filter((t) => t.subtitle_url || t.url);
+      if (tracksWithUrl.length < allTracks.length && allTracks.length > 0) {
+        try {
+          const retry = await fetchFromPage(`https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}${await bilibiliCidParam(bvid)}`);
+          const retryTracks = retry?.data?.subtitle?.subtitles || retry?.data?.subtitle?.list || [];
+          for (const t of retryTracks) {
+            const match = allTracks.find((o) => (o.lan || o.language) === (t.lan || t.language));
+            if (match && (t.subtitle_url || t.url) && !(match.subtitle_url || match.url)) {
+              match.subtitle_url = t.subtitle_url || t.url;
+            }
+          }
+        } catch {}
+      }
+      const [engData, cnData] = await Promise.all([
+        englishTrack ? fetchSubtitleJson(englishTrack).catch(() => null) : Promise.resolve(null),
+        chineseTrack && chineseTrack !== englishTrack ? fetchSubtitleJson(chineseTrack).catch(() => null) : Promise.resolve(null)
+      ]);
+      if (!engData) {
+        const hasEmptyUrl = englishTrack && !(englishTrack.subtitle_url || englishTrack.url);
+        if (hasEmptyUrl) {
+          document.documentElement.dataset.intentBilibiliSubtitles = "waiting-english-url";
+          bilibiliSubtitleState.metadataPromise = null;
+          setTimeout(() => { bilibiliSubtitleState.metadataPromise = null; }, 30000);
+        } else {
+          document.documentElement.dataset.intentBilibiliSubtitles = "missing-english";
+        }
+        return;
+      }
+      if (englishTrack === chineseTrack || !cnData) {
+        bilibiliSubtitleState.englishJson = engData;
+        bilibiliSubtitleState.chineseJson = engData;
+        bilibiliSubtitleState.bilingualSingleTrack = true;
+      } else {
+        bilibiliSubtitleState.englishJson = engData;
+        bilibiliSubtitleState.chineseJson = cnData;
+        bilibiliSubtitleState.bilingualSingleTrack = false;
+      }
+      document.documentElement.dataset.intentBilibiliSubtitles = "waiting";
+    } catch {
       document.documentElement.dataset.intentBilibiliSubtitles = "error";
+    }
+  })();
+}
+
+async function cachedBilibiliTranslationEntries(bvid) {
+  let cached = await new Promise((resolve) => {
+    chrome.storage.local.get("subtitleTranslations", (result) => {
+      resolve(normalizeTranslationEntries(result.subtitleTranslations?.[bvid]));
     });
+  });
+  if (!cached?.length) {
+    try {
+      cached = normalizeTranslationEntries(await fetchJsonViaBackground(`${APP}/api/translated-subtitles?bvid=${encodeURIComponent(bvid)}`));
+    } catch {}
+  }
+  return cached || [];
+}
+
+async function fetchSubtitleJson(track) {
+  const url = track?.subtitle_url || track?.url || "";
+  if (!url) return null;
+  const fullUrl = url.startsWith("//") ? `https:${url}` : url;
+  const payload = await fetchJsonViaBackground(fullUrl);
+  return Array.isArray(payload?.body) ? payload.body : null;
+}
+
+async function downloadChineseSubtitleBody(track) {
+  const cnTrackUrl = track?.subtitle_url || track?.url || "";
+  if (!cnTrackUrl) return null;
+  const cnFullUrl = cnTrackUrl.startsWith("//") ? `https:${cnTrackUrl}` : cnTrackUrl;
+  try {
+    const cnPayload = await fetchFromPage(cnFullUrl, "application/json");
+    if (Array.isArray(cnPayload?.body)) return cnPayload.body;
+  } catch {}
+  const proxied = await fetchJsonViaBackground(`${APP}/api/bilibili/subtitle-json?url=${encodeURIComponent(cnTrackUrl)}`);
+  return Array.isArray(proxied?.body) ? proxied.body : null;
 }
 
 function isEnglishCapableBilibiliSubtitleTrack(track) {
@@ -251,13 +447,38 @@ function currentBilibiliBvid() {
   return match?.[1] || "";
 }
 
-async function fetchJsonViaBackground(url) {
+async function fetchFromPage(url, accept) {
+  const headers = { accept: accept || "application/json" };
+  if (url.includes("bilibili.com")) headers.referer = "https://www.bilibili.com/";
+  const res = await fetch(url, { credentials: "include", headers });
+  if (!res.ok) throw new Error(`Page fetch HTTP ${res.status}`);
+  return res.json();
+}
+
+async function bilibiliCidParam(bvid) {
+  try {
+    const data = await fetchFromPage(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
+    const cid = data?.data?.cid;
+    return cid ? `&cid=${cid}` : "";
+  } catch {
+    return "";
+  }
+}
+
+async function fetchJsonViaBackground(url, options = {}) {
   const response = await new Promise((resolve, reject) => {
     if (!globalThis.chrome?.runtime?.sendMessage) {
       reject(new Error("Extension runtime unavailable"));
       return;
     }
-    chrome.runtime.sendMessage({ type: "intent:bgFetch", url, accept: "application/json" }, (message) => {
+    chrome.runtime.sendMessage({
+      type: "intent:bgFetch",
+      url,
+      accept: "application/json",
+      method: options.method,
+      body: options.body,
+      contentType: options.contentType
+    }, (message) => {
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message || "Background fetch failed"));
@@ -282,164 +503,101 @@ function containsLatinWord(text) {
   return /\b[A-Za-z][A-Za-z'-]{2,}\b/.test(String(text || ""));
 }
 
-function activateNativeBilibiliStackedSubtitles() {
-  const now = Date.now();
-  if (now - bilibiliSubtitleState.lastActivateAt < 2500) return false;
-  bilibiliSubtitleState.lastActivateAt = now;
-
-  const subtitleControl = document.querySelector(".bpx-player-ctrl-subtitle");
-  if (!subtitleControl) return false;
-
-  dispatchUserLikeMouse(subtitleControl);
-
-  if (closeBilibiliSubtitleOffSwitch()) return true;
-
-  const selectedEnglish = clickBilibiliSubtitleOption(
-    (text) => /English|英文|英语|中英|英中|双语|雙語|bilingual/i.test(text),
-    ".bpx-player-ctrl-subtitle-major, .bpx-player-ctrl-subtitle-menu"
-  );
-
-  const selectedChinese = !selectedEnglish && clickBilibiliSubtitleOption(
-    (text) => /中文|Chinese|简体|繁體/.test(text),
-    ".bpx-player-ctrl-subtitle-major, .bpx-player-ctrl-subtitle-menu"
-  );
-
-  const enabledBilingual = enableBilibiliBilingualSwitch();
-
-  return selectedEnglish || selectedChinese || enabledBilingual;
-}
-
-function clickBilibiliSubtitleOption(matchesText, scopeSelector) {
-  const scopes = scopeSelector
-    ? [...document.querySelectorAll(scopeSelector)]
-    : [document];
-  for (const scope of scopes) {
-    const items = [...scope.querySelectorAll(".bpx-player-ctrl-subtitle-language-item, [class*='subtitle-language-item'], [class*='subtitle-item']")];
-    const match = items.find((item) => matchesText(normalizeCaptionText(item.textContent || "")));
-    if (!match) continue;
-    dispatchUserLikeMouse(match);
-    return true;
-  }
-  return false;
-}
-
-function enableBilibiliBilingualSwitch() {
-  const controls = [
-    ...document.querySelectorAll(".bpx-player-ctrl-subtitle-bilingual-above input, [aria-label='双语字幕'], .bpx-player-ctrl-subtitle-bilingual-above")
-  ];
-  for (const control of controls) {
-    const wrapper = control.closest(".bpx-player-ctrl-subtitle-bilingual-above, .bui-switch") || control;
-    const active = control.checked === true ||
-      wrapper.classList.contains("bui-switch-checked") ||
-      wrapper.classList.contains("bpx-state-active");
-    if (active) return true;
-    dispatchUserLikeMouse(control);
-    if (control !== wrapper) dispatchUserLikeMouse(wrapper);
-    return true;
-  }
-  return false;
-}
-
-function closeBilibiliSubtitleOffSwitch() {
-  const off = [...document.querySelectorAll(".bpx-player-ctrl-subtitle-close-switch, .bpx-player-ctrl-subtitle-fake-switch")]
-    .find((node) => /关闭/.test(node.textContent || "") && node.classList.contains("bpx-state-active"));
-  if (!off) return false;
-  dispatchUserLikeMouse(off);
-  return true;
-}
-
-function dispatchUserLikeMouse(node) {
-  if (!node) return;
-  for (const type of ["mouseenter", "mouseover", "mousemove", "mousedown", "mouseup", "click"]) {
-    node.dispatchEvent(new MouseEvent(type, {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      button: 0
-    }));
-  }
-}
-
 function detectVisibleStackedBilibiliSubtitles() {
-  const major = visibleSubtitleText(".bili-subtitle-x-subtitle-panel-major-group, [class*='subtitle-panel-major']");
-  const minor = visibleSubtitleText(".bili-subtitle-x-subtitle-panel-minor-group, [class*='subtitle-panel-minor']");
-  if (isStackedSubtitlePair(major, minor)) return { source: "native-bilingual-groups" };
+  const overlay = document.getElementById("intent-video-subtitle-overlay");
+  if (!overlay) return null;
+  const lines = [...overlay.querySelectorAll("div")]
+    .map((node) => normalizeCaptionText(node.textContent || ""))
+    .filter(Boolean);
+  const source = lines.find(containsCjkText) || "";
+  const english = lines.find((line) => containsLatinWord(line) && line !== source) || "";
+  return source && english ? { source, english } : null;
+}
 
-  for (const root of visibleSubtitleRoots()) {
-    const lines = renderedSubtitleLines(root);
-    if (linesContainStackedPair(lines)) return { source: "native-rendered-container" };
-    if (nearbyLinesContainStackedPair(lines)) return { source: "native-rendered-nearby-lines" };
+function startBilibiliSubtitleOverlay() {
+  const video = document.querySelector("video");
+  if (!video) return;
+
+  const container = video.closest(".bpx-player-container, #bilibili-player, .player-wrap") || video.parentElement;
+  if (!container) return;
+
+  container.style.position = "relative";
+
+  const overlay = document.createElement("div");
+  overlay.id = "intent-video-subtitle-overlay";
+  overlay.style.cssText = "position:absolute;bottom:48px;left:50%;transform:translateX(-50%);z-index:100;pointer-events:none;text-align:center;max-width:90%;";
+  container.appendChild(overlay);
+  bilibiliSubtitleState.overlayElement = overlay;
+  bilibiliSubtitleState.overlayActive = true;
+
+  video.addEventListener("timeupdate", updateBilibiliSubtitleOverlay);
+  video.addEventListener("pause", updateBilibiliSubtitleOverlay);
+  video.addEventListener("play", updateBilibiliSubtitleOverlay);
+  updateBilibiliSubtitleOverlay();
+}
+
+function updateBilibiliSubtitleOverlay() {
+  const overlay = bilibiliSubtitleState.overlayElement;
+  if (!overlay) return;
+  const video = document.querySelector("video");
+  if (!video || video.paused) {
+    if (video?.paused) overlay.innerHTML = "";
+    return;
   }
+  const time = video.currentTime;
+  if (bilibiliSubtitleState.bilingualSingleTrack) {
+    const entry = findSubtitleEntryAt(bilibiliSubtitleState.chineseJson, time);
+    if (!entry) { overlay.innerHTML = ""; return; }
+    const parts = splitBilingualEntry(entry.content || "");
+    let html = "";
+    if (parts.cjk) html += subtitleDivHtml(parts.cjk, 16);
+    if (parts.latin) html += subtitleDivHtml(parts.latin, 14);
+    if (parts.rest) html += subtitleDivHtml(parts.rest, 14);
+    overlay.innerHTML = html;
+  } else {
+    const cn = findSubtitleAt(bilibiliSubtitleState.chineseJson, time);
+    const en = findSubtitleAt(bilibiliSubtitleState.englishJson, time);
+    let html = "";
+    if (cn) html += subtitleDivHtml(cn, 16);
+    if (en) html += subtitleDivHtml(en, 14);
+    overlay.innerHTML = html;
+  }
+}
 
-  const groups = visibleSubtitleLeaves();
-  for (let i = 0; i < groups.length; i += 1) {
-    for (let j = 0; j < groups.length; j += 1) {
-      if (i === j) continue;
-      const first = groups[i];
-      const second = groups[j];
-      if (Math.abs(first.rect.left - second.rect.left) > Math.max(80, first.rect.width * 0.4)) continue;
-      if (second.rect.top <= first.rect.top) continue;
-      if (isStackedSubtitlePair(first.text, second.text)) return { source: "native-visible-lines" };
+function subtitleDivHtml(text, fontSize) {
+  return `<div style="color:#fff;background:rgba(0,0,0,0.75);padding:4px 12px;border-radius:4px;font-size:${fontSize}px;line-height:1.4;margin-bottom:4px;text-shadow:1px 1px 2px rgba(0,0,0,0.8)">${escapeHtml(text)}</div>`;
+}
+
+function splitBilingualEntry(text) {
+  const lines = String(text || "").split(/\n|\\n/).map((l) => l.trim()).filter(Boolean);
+  let cjk = "";
+  let latin = "";
+  const rest = [];
+  for (const line of lines) {
+    if (!cjk && /[\u3400-\u9fff]/.test(line) && !/\b[A-Za-z][A-Za-z'-]{2,}\b/.test(line.replace(/[\u3400-\u9fff]/g, ""))) {
+      cjk = line;
+    } else if (!latin && /\b[A-Za-z][A-Za-z'-]{2,}\b/.test(line) && !/[\u3400-\u9fff]/.test(line)) {
+      latin = line;
+    } else {
+      rest.push(line);
     }
   }
-  return null;
+  return { cjk, latin, rest: rest.join(" ") || null };
 }
 
-function visibleSubtitleText(selector) {
-  const node = [...document.querySelectorAll(selector)].find(isVisible);
-  return node ? normalizeCaptionText(node.textContent || "") : "";
+function findSubtitleAt(subtitleJson, time) {
+  if (!Array.isArray(subtitleJson)) return null;
+  const entry = subtitleJson.find((item) => time >= (item.from || 0) && time <= (item.to || 0));
+  return entry?.content || null;
 }
 
-function visibleSubtitleLeaves() {
-  const roots = visibleSubtitleRoots();
-  const leaves = [];
-  for (const root of roots) {
-    const candidates = root.childElementCount
-      ? [...root.querySelectorAll("*")].filter((node) => node.childElementCount === 0)
-      : [root];
-    for (const node of candidates) {
-      if (!isVisible(node)) continue;
-      const text = normalizeCaptionText(node.textContent || "");
-      if (text.length < 2 || /^(字幕|关闭|开启|自动|设置|双语字幕)$/.test(text)) continue;
-      leaves.push({ node, text, rect: node.getBoundingClientRect() });
-    }
-  }
-  return leaves;
+function findSubtitleEntryAt(subtitleJson, time) {
+  if (!Array.isArray(subtitleJson)) return null;
+  return subtitleJson.find((item) => time >= (item.from || 0) && time <= (item.to || 0)) || null;
 }
 
-function isStackedSubtitlePair(first, second) {
-  if (!first || !second || first === second) return false;
-  return (containsCjkText(first) && containsLatinWord(second)) ||
-    (containsLatinWord(first) && containsCjkText(second));
-}
-
-function visibleSubtitleRoots() {
-  return [
-    ...document.querySelectorAll(".bpx-player-subtitle-wrap, .bili-subtitle-x-subtitle-panel, .bilibili-player-video-subtitle, [data-intent-video-player='true']")
-  ].filter(isVisible);
-}
-
-function renderedSubtitleLines(node) {
-  return normalizeCaptionText(node.innerText || node.textContent || "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length >= 2 && !/^(字幕|关闭|开启|自动|设置|双语字幕)$/.test(line));
-}
-
-function linesContainStackedPair(lines) {
-  for (let i = 0; i < lines.length - 1; i += 1) {
-    if (isStackedSubtitlePair(lines[i], lines[i + 1])) return true;
-  }
-  return false;
-}
-
-function nearbyLinesContainStackedPair(lines) {
-  for (let i = 0; i < lines.length; i += 1) {
-    for (let j = i + 1; j < Math.min(lines.length, i + 5); j += 1) {
-      if (isStackedSubtitlePair(lines[i], lines[j])) return true;
-    }
-  }
-  return false;
+function escapeHtml(text) {
+  return String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function revealFocusPath(node) {

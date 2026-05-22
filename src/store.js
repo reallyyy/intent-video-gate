@@ -2,7 +2,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { paths } from "./paths.js";
 import { ensureDirs } from "./config.js";
 
-export const FEED_POLICY_VERSION = "bilibili-english-subtitles-v1";
+export const FEED_POLICY_VERSION = "bilibili-translated-subtitles-v4";
 
 export async function appendHistory(entry) {
   await ensureDirs();
@@ -229,5 +229,77 @@ function summary(candidate) {
     platform: candidate.platform,
     title: candidate.title || candidate.gate?.safeTitle || "",
     uploader: candidate.uploader || ""
+  };
+}
+
+const translationCache = new Map();
+
+export function getCachedTranslation(bvid) {
+  return translationCache.get(bvid) || null;
+}
+
+export function setCachedTranslation(bvid, entries) {
+  const translation = normalizeTranslation(bvid, entries);
+  if (!translation) return null;
+  translationCache.set(bvid, translation);
+  return translation;
+}
+
+export async function readCachedTranslations() {
+  try {
+    const raw = await readFile(paths.cacheFile, "utf8");
+    const parsed = JSON.parse(raw);
+    const translations = parsed.subtitleTranslations || {};
+    for (const [bvid, translation] of Object.entries(translations)) {
+      const normalized = normalizeTranslation(bvid, translation);
+      if (normalized && !translationCache.has(bvid)) translationCache.set(bvid, normalized);
+    }
+    return translations;
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function readCachedTranslation(bvid) {
+  const memory = getCachedTranslation(bvid);
+  if (memory) return memory;
+  const translations = await readCachedTranslations();
+  const normalized = normalizeTranslation(bvid, translations?.[bvid]);
+  if (normalized) translationCache.set(bvid, normalized);
+  return normalized;
+}
+
+export async function writeCachedTranslation(bvid, entries) {
+  const translation = setCachedTranslation(bvid, entries);
+  if (!translation) return null;
+  await ensureDirs();
+  let current = {};
+  try {
+    current = JSON.parse(await readFile(paths.cacheFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  current.subtitleTranslations = current.subtitleTranslations || {};
+  current.subtitleTranslations[bvid] = translation;
+  current.subtitleTranslationsUpdatedAt = new Date().toISOString();
+  await writeFile(paths.cacheFile, JSON.stringify(current, null, 2) + "\n");
+  return translation;
+}
+
+export function clearTranslationCache() {
+  translationCache.clear();
+}
+
+function normalizeTranslation(bvid, value) {
+  const entries = Array.isArray(value) ? value : value?.entries;
+  const validEntries = Array.isArray(entries)
+    ? entries.filter((entry) => entry && entry.translation)
+    : [];
+  if (!bvid || !validEntries.length) return null;
+  return {
+    bvid,
+    translatedAt: value?.translatedAt || new Date().toISOString(),
+    entries: validEntries
   };
 }

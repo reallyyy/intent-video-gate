@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildBilibiliSearchQueryPrompt, buildPrompt, parseFilterRefinementResult, parseGeminiResult, parseSearchQueryResult } from "../src/gemini.js";
+import { buildBilibiliSearchQueryPrompt, buildPrompt, buildSubtitleTranslationPrompt, parseFilterRefinementResult, parseGeminiResult, parseSearchQueryResult } from "../src/gemini.js";
 
 test("parses Gemini outer JSON and inner decision JSON", () => {
   const result = {
@@ -44,7 +44,7 @@ test("parses Gemini Bilibili search query JSON", () => {
   assert.deepEqual(parsed.queries, ["科技纪录片", "深度访谈"]);
 });
 
-test("Bilibili search query prompt requires subtitle-friendly searches", () => {
+test("Bilibili search query prompt targets native Chinese content", () => {
   const prompt = buildBilibiliSearchQueryPrompt({
     intent: "thoughtful documentaries",
     blockKeywords: [],
@@ -52,9 +52,9 @@ test("Bilibili search query prompt requires subtitle-friendly searches", () => {
     rejectedBilibili: []
   });
 
-  assert.match(prompt, /subtitle or CC tracks/);
-  assert.match(prompt, /stacked original \+ English subtitles/);
-  assert.match(prompt, /CC字幕/);
+  assert.match(prompt, /native Chinese/);
+  assert.match(prompt, /Translate the user's intent into Chinese/);
+  assert.match(prompt, /NOT English-translated or bilingual/);
 });
 
 test("classification prompt treats explicit music allowances as authoritative", () => {
@@ -150,4 +150,14 @@ test("fails closed on invalid Gemini filter refinement JSON", () => {
     stdout: JSON.stringify({ response: JSON.stringify({ reply: "No prompt." }) })
   });
   assert.equal(parsed.ok, false);
+});
+
+test("buildSubtitleTranslationPrompt produces valid prompt with Chinese lines", () => {
+  const lines = ["你好世界", "这是一个测试", "第三行"];
+  const prompt = buildSubtitleTranslationPrompt(lines);
+  assert.match(prompt, /Translate these Chinese subtitle lines/);
+  assert.match(prompt, /JSON array/);
+  assert.match(prompt, /你好世界/);
+  assert.match(prompt, /这是一个测试/);
+  assert.match(prompt, /第三行/);
 });

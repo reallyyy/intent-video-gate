@@ -141,7 +141,11 @@ export async function bilibiliSubtitleTracksForUrl(rawUrl) {
 }
 
 export function englishCapableBilibiliSubtitleTracks(tracks = []) {
-  return tracks.filter(isEnglishCapableSubtitleTrack);
+  return tracks.filter((t) => t.url && isEnglishCapableSubtitleTrack(t));
+}
+
+export function chineseBilibiliSubtitleTracks(tracks = []) {
+  return tracks.filter((t) => t.url && isChineseSubtitleTrack(t));
 }
 
 export function isEnglishCapableSubtitleTrack(track) {
@@ -151,6 +155,13 @@ export function isEnglishCapableSubtitleTrack(track) {
   return /\ben(-|_|$|\b)/.test(language) ||
     /\beng(lish)?\b/.test(haystack) ||
     /english|英文|英语|中英|英中|双语|雙語|bilingual/.test(haystack);
+}
+
+function isChineseSubtitleTrack(track) {
+  const language = normalizeSubtitleText(track?.language);
+  const label = normalizeSubtitleText(track?.label);
+  const haystack = `${language} ${label}`;
+  return /\bzh(-|_|$|\b)/.test(language) || /中文|Chinese/i.test(haystack);
 }
 
 export async function playVideo(url, config) {
@@ -167,15 +178,31 @@ export async function playVideo(url, config) {
 }
 
 async function fetchBilibiliJson(url) {
-  const response = await fetch(url, {
+  const headers = {
+    accept: "application/json",
+    referer: "https://www.bilibili.com/",
+    "user-agent": "Mozilla/5.0"
+  };
+  const cookie = globalThis.__intentBilibiliCookie?.();
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(url, { headers });
+  if (!response.ok) throw new Error(`Bilibili metadata failed: HTTP ${response.status}`);
+  return await response.json();
+}
+
+export async function fetchBilibiliSubtitleJson(url) {
+  if (!url) return null;
+  const fullUrl = url.startsWith("//") ? `https:${url}` : url;
+  const response = await fetch(fullUrl, {
     headers: {
       accept: "application/json",
       referer: "https://www.bilibili.com/",
       "user-agent": "Mozilla/5.0"
     }
   });
-  if (!response.ok) throw new Error(`Bilibili metadata failed: HTTP ${response.status}`);
-  return await response.json();
+  if (!response.ok) throw new Error(`Subtitle download failed: HTTP ${response.status}`);
+  const payload = await response.json();
+  return Array.isArray(payload?.body) ? payload.body : null;
 }
 
 function addSubtitleTracks(output, tracks, source) {
