@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.js";
 import { paths, useProjectLocalPaths } from "../src/paths.js";
-import { FEED_POLICY_VERSION, readCachedFeedPolicy, readCachedSuggestions, writeCachedFeed } from "../src/store.js";
-import { applyBilibiliSubtitlePrefilter, applyKeywordPrefilter, approvedFeedResult, createApp, selectFeedCandidates, selectFinalFeed } from "../src/server.js";
+import { FEED_POLICY_VERSION, readCachedFeedPolicy, readCachedSuggestions, writeCachedFeed, writeCachedTranslation } from "../src/store.js";
+import { applyBilibiliSubtitlePrefilter, applyKeywordPrefilter, approvedFeedResult, createApp, selectFeedCandidates, selectFinalFeed, subtitleSourceSummary, validateTranslationCoverage } from "../src/server.js";
 
 test("pre-classification candidates include YouTube when Bilibili cache is full", () => {
   const cachedBilibili = Array.from({ length: 80 }, (_, index) => ({
@@ -70,6 +70,53 @@ test("music candidates are not locally blocked without keyword matches", () => {
 
   assert.equal(result.allowed.length, 1);
   assert.equal(result.blocked.length, 0);
+});
+
+test("translation validation accepts complete matching cache metadata", () => {
+  const source = [
+    { from: 0, to: 5, content: "你好" },
+    { from: 5, to: 10, content: "世界" }
+  ];
+  const summary = subtitleSourceSummary(source);
+  const result = validateTranslationCoverage({
+    bvid: "BVvalid",
+    ...summary,
+    entries: [
+      { from: 0, to: 5, content: "你好", translation: "Hello" },
+      { from: 5, to: 10, content: "世界", translation: "world" }
+    ]
+  }, source);
+
+  assert.equal(result.ok, true);
+});
+
+test("translation validation rejects short and stale caches", () => {
+  const source = Array.from({ length: 100 }, (_, index) => ({
+    from: index * 2,
+    to: index * 2 + 1,
+    content: `当前${index}`
+  }));
+  const shortCache = {
+    bvid: "BVshort",
+    entries: source.slice(0, 6).map((entry) => ({ ...entry, translation: "x" }))
+  };
+  const staleCache = {
+    bvid: "BVstale",
+    entries: source.map((entry, index) => ({ ...entry, content: `旧${index}`, translation: "x" }))
+  };
+
+  assert.equal(validateTranslationCoverage(shortCache, source).ok, false);
+  assert.equal(validateTranslationCoverage(staleCache, source).ok, false);
+});
+
+test("subtitle source summary exposes long Chinese-only translation duration", () => {
+  const summary = subtitleSourceSummary([
+    { from: 0, to: 5, content: "开始" },
+    { from: 650, to: 660, content: "结束" }
+  ]);
+
+  assert.equal(summary.sourceEntryCount, 2);
+  assert.equal(summary.sourceDurationSeconds, 660);
 });
 
 test("Bilibili subtitle prefilter blocks CN-only and zero-track videos", async () => {
@@ -205,6 +252,9 @@ test("Bilibili subtitle prefilter allows Chinese-only video with cached translat
     if (url.includes("BVcachedtrans") && url.includes("api.bilibili.com")) {
       return jsonResponse({ code: 0, data: { subtitle: { list: [{ lan: "ai-zh", lan_doc: "中文", subtitle_url: "//example.com/cn-sub.json" }] } } });
     }
+    if (url.includes("example.com/cn-sub.json")) {
+      return jsonResponse({ body: [{ from: 0, to: 5, content: "你好" }] });
+    }
     return jsonResponse({ code: 0, data: {} });
   };
   try {
@@ -230,6 +280,9 @@ test("Bilibili subtitle prefilter allows Chinese-only video with downloadable tr
     if (url.includes("BVchineseurl") && url.includes("api.bilibili.com")) {
       return jsonResponse({ code: 0, data: { subtitle: { list: [{ lan: "ai-zh", lan_doc: "中文", subtitle_url: "//example.com/cn.json" }] } } });
     }
+    if (url.includes("example.com/cn.json")) {
+      return jsonResponse({ body: [{ from: 0, to: 5, content: "你好" }] });
+    }
     return jsonResponse({ code: 0, data: {} });
   };
   try {
@@ -243,6 +296,84 @@ test("Bilibili subtitle prefilter allows Chinese-only video with downloadable tr
     ], {});
     assert.equal(result.allowed.length, 1);
     assert.equal(result.allowed[0].subtitleEligibility, "chinese-needs-translation");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Bilibili subtitle policy blocks Chinese-only videos over ten minutes", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("BVlongcn") && url.includes("api.bilibili.com")) {
+      return jsonResponse({ code: 0, data: { subtitle: { list: [{ lan: "ai-zh", lan_doc: "中文", subtitle_url: "//example.com/long-cn.json" }] } } });
+    }
+    if (url.includes("example.com/long-cn.json")) {
+      return jsonResponse({ body: [
+        { from: 0, to: 5, content: "开始" },
+        { from: 650, to: 660, content: "结束" }
+      ] });
+    }
+    return jsonResponse({ code: 0, data: {} });
+  };
+  try {
+    const result = await applyBilibiliSubtitlePrefilter([
+      {
+        id: "bilibili:BVlongcn",
+        platform: "bilibili",
+        title: "Long Chinese-only Bilibili video",
+        url: "https://www.bilibili.com/video/BVlongcn",
+        gate: { decision: "allow", labels: [] }
+      }
+    ], {});
+    assert.equal(result.allowed.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].gate.reason, /10-minute translation limit/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Bilibili subtitle policy allows Gemini-labeled music without subtitles", async () => {
+  const result = await applyBilibiliSubtitlePrefilter([
+    {
+      id: "bilibili:BVmusicnosubs",
+      platform: "bilibili",
+      title: "Warm live performance",
+      url: "https://www.bilibili.com/video/BVmusicnosubs",
+      gate: { decision: "allow", labels: ["music-no-subtitles"] }
+    }
+  ], {});
+
+  assert.equal(result.allowed.length, 1);
+  assert.equal(result.allowed[0].subtitleEligibility, "music-no-subtitles");
+  assert.equal(result.blocked.length, 0);
+});
+
+test("Bilibili subtitle policy allows long videos with verified English subtitles", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("BVlongenglish") && url.includes("api.bilibili.com")) {
+      return jsonResponse({ code: 0, data: { subtitle: { list: [{ lan: "en-US", lan_doc: "English", subtitle_url: "//example.com/long-en.json" }] } } });
+    }
+    if (url.includes("example.com/long-en.json")) {
+      return jsonResponse({ body: [{ from: 0, to: 1200, content: "Long English subtitle" }] });
+    }
+    return jsonResponse({ code: 0, data: {} });
+  };
+  try {
+    const result = await applyBilibiliSubtitlePrefilter([
+      {
+        id: "bilibili:BVlongenglish",
+        platform: "bilibili",
+        title: "Long English-subtitled Bilibili video",
+        url: "https://www.bilibili.com/video/BVlongenglish",
+        gate: { decision: "allow", labels: [] }
+      }
+    ], {});
+    assert.equal(result.allowed.length, 1);
+    assert.equal(result.allowed[0].subtitleEligibility, "english-verified");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -401,6 +532,46 @@ test("feed API serves durable Bilibili subtitle translations from cache root", a
     assert.equal(feed.items[0].subtitleTranslation.entries[0].translation, "Hello");
     assert.equal(translated.entries[0].translation, "Hello");
   } finally {
+    await api.close();
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
+test("translated subtitle API rejects stale partial Bilibili translation cache", async () => {
+  const state = await isolatedStateWithFakeTools({ suggestions: [] });
+  await writeCachedTranslation("BVpartialcache", [
+    { from: 0, to: 5, content: "旧缓存", translation: "Old cache" }
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("api.bilibili.com/x/web-interface/view")) {
+      return jsonResponse({
+        code: 0,
+        data: {
+          cid: 123,
+          subtitle: { list: [{ lan: "ai-zh", lan_doc: "中文", subtitle_url: "//example.com/current-cn.json" }] }
+        }
+      });
+    }
+    if (url.includes("api.bilibili.com/x/player/v2")) {
+      return jsonResponse({ code: 0, data: { subtitle: { subtitles: [] } } });
+    }
+    if (url.includes("example.com/current-cn.json")) {
+      return jsonResponse({ body: Array.from({ length: 20 }, (_, index) => ({
+        from: index,
+        to: index + 0.5,
+        content: `当前${index}`
+      })) });
+    }
+    return originalFetch(input);
+  };
+  const api = await listenApp(state.config);
+  try {
+    const response = await fetch(`${api.url}/api/translated-subtitles?bvid=BVpartialcache`);
+    assert.equal(response.status, 404);
+  } finally {
+    globalThis.fetch = originalFetch;
     await api.close();
     await rm(state.root, { recursive: true, force: true });
   }

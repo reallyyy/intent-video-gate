@@ -2,7 +2,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { paths } from "./paths.js";
 import { ensureDirs } from "./config.js";
 
-export const FEED_POLICY_VERSION = "bilibili-translated-subtitles-v4";
+export const FEED_POLICY_VERSION = "bilibili-translated-subtitles-v5";
 
 export async function appendHistory(entry) {
   await ensureDirs();
@@ -238,8 +238,8 @@ export function getCachedTranslation(bvid) {
   return translationCache.get(bvid) || null;
 }
 
-export function setCachedTranslation(bvid, entries) {
-  const translation = normalizeTranslation(bvid, entries);
+export function setCachedTranslation(bvid, entries, metadata = {}) {
+  const translation = normalizeTranslation(bvid, entries, metadata);
   if (!translation) return null;
   translationCache.set(bvid, translation);
   return translation;
@@ -270,8 +270,8 @@ export async function readCachedTranslation(bvid) {
   return normalized;
 }
 
-export async function writeCachedTranslation(bvid, entries) {
-  const translation = setCachedTranslation(bvid, entries);
+export async function writeCachedTranslation(bvid, entries, metadata = {}) {
+  const translation = setCachedTranslation(bvid, entries, metadata);
   if (!translation) return null;
   await ensureDirs();
   let current = {};
@@ -287,11 +287,27 @@ export async function writeCachedTranslation(bvid, entries) {
   return translation;
 }
 
+export async function deleteCachedTranslation(bvid) {
+  translationCache.delete(bvid);
+  await ensureDirs();
+  let current = {};
+  try {
+    current = JSON.parse(await readFile(paths.cacheFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (current.subtitleTranslations?.[bvid]) {
+    delete current.subtitleTranslations[bvid];
+    current.subtitleTranslationsUpdatedAt = new Date().toISOString();
+    await writeFile(paths.cacheFile, JSON.stringify(current, null, 2) + "\n");
+  }
+}
+
 export function clearTranslationCache() {
   translationCache.clear();
 }
 
-function normalizeTranslation(bvid, value) {
+function normalizeTranslation(bvid, value, metadata = {}) {
   const entries = Array.isArray(value) ? value : value?.entries;
   const validEntries = Array.isArray(entries)
     ? entries.filter((entry) => entry && entry.translation)
@@ -300,6 +316,17 @@ function normalizeTranslation(bvid, value) {
   return {
     bvid,
     translatedAt: value?.translatedAt || new Date().toISOString(),
+    ...translationMetadata(value),
+    ...translationMetadata(metadata),
     entries: validEntries
   };
+}
+
+function translationMetadata(value = {}) {
+  const out = {};
+  if (value.sourceFingerprint) out.sourceFingerprint = String(value.sourceFingerprint);
+  for (const key of ["sourceEntryCount", "sourceDurationSeconds", "sourceLastTo"]) {
+    if (Number.isFinite(Number(value[key]))) out[key] = Number(value[key]);
+  }
+  return out;
 }

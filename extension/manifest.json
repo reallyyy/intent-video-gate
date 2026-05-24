@@ -27,7 +27,7 @@
         "*://*.bilibili.com/*",
         "http://127.0.0.1:47231/*"
       ],
-      "js": ["content.js"],
+      "js": ["subtitle-align.js", "content.js"],
       "css": ["focus.css"],
       "run_at": "document_idle"
     }

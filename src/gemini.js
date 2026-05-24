@@ -78,6 +78,8 @@ When uncertain, allow if the video is plausibly informative, educational, practi
 Return only valid JSON, no markdown, with this shape:
 {"decisions":[{"id":"candidate id","decision":"allow|block|ask","confidence":0.0,"reason":"short reason","labels":["short"],"safe_title":"clean title"}]}
 
+Use the exact label "music-no-subtitles" only for Bilibili videos that are primarily music listening, music video, or live performance content where understanding spoken language is not needed. Do not use it for music analysis, interviews, tutorials, lectures, commentary, podcasts, documentaries, or other spoken content.
+
 Candidates:
 ${JSON.stringify(compact, null, 2)}`;
 }

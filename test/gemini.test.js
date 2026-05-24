@@ -71,6 +71,7 @@ test("classification prompt treats explicit music allowances as authoritative", 
   assert.equal(prompt.includes("pure music"), false);
   assert.match(prompt, /source of truth/);
   assert.match(prompt, /music taste/);
+  assert.match(prompt, /music-no-subtitles/);
 });
 
 test("parses Gemini filter refinement JSON", () => {

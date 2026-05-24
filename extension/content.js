@@ -555,8 +555,13 @@ function updateBilibiliSubtitleOverlay() {
     if (parts.rest) html += subtitleDivHtml(parts.rest, 14);
     overlay.innerHTML = html;
   } else {
-    const cn = findSubtitleAt(bilibiliSubtitleState.chineseJson, time);
-    const en = findSubtitleAt(bilibiliSubtitleState.englishJson, time);
+    const pair = globalThis.IntentVideoSubtitleAlign?.alignedSubtitlePair(
+      bilibiliSubtitleState.chineseJson,
+      bilibiliSubtitleState.englishJson,
+      time
+    ) || {};
+    const cn = pair.chinese ?? findSubtitleAt(bilibiliSubtitleState.chineseJson, time);
+    const en = pair.english ?? findSubtitleAt(bilibiliSubtitleState.englishJson, time);
     let html = "";
     if (cn) html += subtitleDivHtml(cn, 16);
     if (en) html += subtitleDivHtml(en, 14);

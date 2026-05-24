@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,11 +9,13 @@ import { proxyBilibiliThumbnail, thumbnailProxyPath } from "./bilibili.js";
 import { createGrant, hasGrant } from "./grants.js";
 import { commandExists } from "./process.js";
 import { classifyBrowserNavigation, parseVideoUrl } from "./rules.js";
-import { FEED_POLICY_VERSION, appendHistory, getCachedTranslation, readAuthState, readBlockKeywords, readCachedFeed, readCachedFeedPolicy, readCachedSuggestions, readCachedTranslation, readFilter, writeAuthState, writeBlockKeywords, writeCachedFeed, writeCachedSuggestions, writeCachedTranslation, writeFilter } from "./store.js";
+import { FEED_POLICY_VERSION, appendHistory, deleteCachedTranslation, getCachedTranslation, readAuthState, readBlockKeywords, readCachedFeed, readCachedFeedPolicy, readCachedSuggestions, readCachedTranslation, readFilter, writeAuthState, writeBlockKeywords, writeCachedFeed, writeCachedSuggestions, writeCachedTranslation, writeFilter } from "./store.js";
 import { bilibiliApiRecommendations, bilibiliRecommendations, bilibiliSearchApi, bilibiliSubtitleTracksForUrl, chineseBilibiliSubtitleTracks, englishCapableBilibiliSubtitleTracks, fetchBilibiliSubtitleJson, metadataForUrl, searchVideos, youtubeRecommendations } from "./video.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const publicDir = join(root, "public");
+const MAX_TRANSLATED_SUBTITLE_SECONDS = 600;
+const MIN_TRANSLATION_COVERAGE = 0.85;
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -73,7 +76,7 @@ export function createApp(config) {
       if (req.method === "GET" && url.pathname === "/api/translated-subtitles") {
         const bvid = url.searchParams.get("bvid");
         if (!bvid) return json(res, { error: "bvid required" }, 400);
-        const cached = await translationForBvid(bvid) || await cachedFeedTranslation(bvid);
+        const cached = await validatedTranslationForBvid(bvid, await cachedFeedTranslation(bvid));
         if (!cached) return text(res, "not found", 404);
         return json(res, cached);
       }
@@ -93,7 +96,7 @@ export function createApp(config) {
           if (!translatedCount) {
             console.error("[translate-subtitles] FAIL: Gemini returned zero translations for %s (%d entries)", bvid, entries.length);
           }
-          const cachedTranslation = await writeCachedTranslation(bvid, translated);
+          const cachedTranslation = await writeCachedTranslation(bvid, translated, subtitleSourceSummary(entries));
           return json(res, cachedTranslation || { bvid, entries: translated });
         } catch (e) {
           console.error("[translate-subtitles] FAIL for %s (%d entries):", bvid, entries.length, e);
@@ -288,27 +291,29 @@ export async function approvedFeedResult(config, options = {}) {
     limit: config.suggestions.maxCollected
   });
 
-  progress("filter", `Checking subtitles for ${candidates.filter((item) => item.platform === "bilibili").length} Bilibili candidate${candidates.filter((item) => item.platform === "bilibili").length === 1 ? "" : "s"}.`, { candidates: candidates.length });
+  progress("filter", `Applying blocked words to ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}.`, { candidates: candidates.length });
   const blockKeywords = await readBlockKeywords(config.blockKeywords);
-  const subtitleFiltered = await applyBilibiliSubtitlePrefilter(candidates, config);
-  progress("filter", `Applying blocked words to ${subtitleFiltered.allowed.length} candidate${subtitleFiltered.allowed.length === 1 ? "" : "s"}.`);
-  const prefiltered = applyKeywordPrefilter(subtitleFiltered.allowed, blockKeywords);
+  const prefiltered = applyKeywordPrefilter(candidates, blockKeywords);
   progress("classify", `Asking Gemini to classify ${prefiltered.allowed.length} candidate${prefiltered.allowed.length === 1 ? "" : "s"}.`);
   const gated = await classifyInBatches({ intent: filter, candidates: prefiltered.allowed, config, batchSize: 24 });
+  progress("filter", `Checking subtitles for approved Bilibili candidates.`);
+  const initialSubtitleFiltered = await applyBilibiliSubtitlePrefilter(gated.filter((item) => item.gate?.decision === "allow"), config);
   progress("search", "Searching Bilibili if the approved feed is short.");
   const search = await searchApprovedBilibiliIfNeeded({
     intent: filter,
     blockKeywords,
     initialCandidates: candidates,
     keywordAllowed: prefiltered.allowed,
-    keywordBlocked: [...subtitleFiltered.blocked, ...prefiltered.blocked],
+    keywordBlocked: prefiltered.blocked,
+    subtitleBlocked: initialSubtitleFiltered.blocked,
     gated,
+    approvedBilibiliCount: initialSubtitleFiltered.allowed.filter((item) => item.platform === "bilibili").length,
     config
   });
-  const allSubtitleBlocked = [...subtitleFiltered.blocked, ...search.subtitleBlocked];
+  const allSubtitleBlocked = [...initialSubtitleFiltered.blocked, ...search.subtitleBlocked];
   const allKeywordBlocked = [...prefiltered.blocked, ...search.keywordBlocked];
   const allGated = [...gated, ...search.gated];
-  const approved = allGated.filter((item) => item.gate?.decision === "allow");
+  const approved = [...initialSubtitleFiltered.allowed, ...search.subtitleAllowed];
   const selection = selectFinalFeed(approved, config.suggestions.feedSize);
   progress("translate", `Ensuring subtitle translations are cached for ${selection.items.filter((item) => item.platform === "bilibili").length} selected Bilibili video${selection.items.filter((item) => item.platform === "bilibili").length === 1 ? "" : "s"}.`);
   await preTranslateChineseSubtitles(selection.items, config, progress);
@@ -337,23 +342,24 @@ export async function approvedFeedResult(config, options = {}) {
   return { items: feed, diagnostics };
 }
 
-async function searchApprovedBilibiliIfNeeded({ intent, blockKeywords, initialCandidates, keywordAllowed, keywordBlocked, gated, config }) {
+async function searchApprovedBilibiliIfNeeded({ intent, blockKeywords, initialCandidates, keywordAllowed, keywordBlocked, subtitleBlocked = [], gated, approvedBilibiliCount = 0, config }) {
   const target = feedTargets(config.suggestions.feedSize).bilibili;
-  const approvedBilibili = gated.filter((item) => item.platform === "bilibili" && item.gate?.decision === "allow").length;
   const empty = {
     queries: [],
     candidatesByQuery: {},
     candidates: [],
+    subtitleAllowed: [],
     subtitleBlocked: [],
     keywordBlocked: [],
     gated: [],
     approved: 0,
     errors: []
   };
-  if (approvedBilibili >= target) return empty;
+  if (approvedBilibiliCount >= target) return empty;
 
   const rejectedBilibili = [
     ...keywordBlocked.filter((item) => item.platform === "bilibili"),
+    ...subtitleBlocked.filter((item) => item.platform === "bilibili"),
     ...gated.filter((item) => item.platform === "bilibili" && item.gate?.decision !== "allow")
   ];
   const approved = gated.filter((item) => item.gate?.decision === "allow");
@@ -385,17 +391,18 @@ async function searchApprovedBilibiliIfNeeded({ intent, blockKeywords, initialCa
     }
   }
 
-  const subtitleFiltered = await applyBilibiliSubtitlePrefilter(searchCandidates, config);
-  const prefiltered = applyKeywordPrefilter(subtitleFiltered.allowed, blockKeywords);
+  const prefiltered = applyKeywordPrefilter(searchCandidates, blockKeywords);
   const searchedGated = await classifyInBatches({ intent, candidates: prefiltered.allowed, config, batchSize: 24 });
+  const subtitleFiltered = await applyBilibiliSubtitlePrefilter(searchedGated.filter((item) => item.gate?.decision === "allow"), config);
   return {
     queries,
     candidatesByQuery,
     candidates: searchCandidates,
+    subtitleAllowed: subtitleFiltered.allowed,
     subtitleBlocked: subtitleFiltered.blocked,
     keywordBlocked: prefiltered.blocked,
     gated: searchedGated,
-    approved: searchedGated.filter((item) => item.platform === "bilibili" && item.gate?.decision === "allow").length,
+    approved: subtitleFiltered.allowed.filter((item) => item.platform === "bilibili").length,
     errors
   };
 }
@@ -408,11 +415,19 @@ export async function applyBilibiliSubtitlePrefilter(candidates = [], config) {
       allowed.push(candidate);
       continue;
     }
+    if (isMusicNoSubtitles(candidate)) {
+      allowed.push({ ...candidate, subtitleEligibility: "music-no-subtitles" });
+      continue;
+    }
     try {
       const parsed = parseVideoUrl(candidate.url || "");
-      const cachedTranslation = parsed?.id ? await translationForBvid(parsed.id, candidate.subtitleTranslation) : null;
-      if (cachedTranslation?.entries?.length) {
-        allowed.push({ ...candidate, subtitleEligibility: "chinese-needs-translation", subtitleTranslation: cachedTranslation });
+      const metadataTranslation = parsed?.id ? await translationForBvid(parsed.id, candidate.subtitleTranslation) : null;
+      if (isSelfValidatedTranslation(metadataTranslation)) {
+        allowed.push({
+          ...candidate,
+          subtitleEligibility: "chinese-needs-translation",
+          subtitleTranslation: metadataTranslation
+        });
         continue;
       }
       const subtitleTracks = await bilibiliSubtitleTracksForUrl(candidate.url);
@@ -440,7 +455,25 @@ export async function applyBilibiliSubtitlePrefilter(candidates = [], config) {
       const chineseTracks = chineseBilibiliSubtitleTracks(subtitleTracks);
       const downloadableChineseTracks = chineseTracks.filter((track) => track.subtitle_url || track.url);
       if (downloadableChineseTracks.length) {
-        allowed.push({ ...candidate, subtitleTracks, subtitleEligibility: "chinese-needs-translation" });
+        const source = await chineseSubtitleSourceFromTrack(downloadableChineseTracks[0]);
+        if (!source.entries.length) {
+          blocked.push(blockBilibiliSubtitleCandidate(candidate, "Bilibili Chinese subtitle track listed but content not yet available."));
+          continue;
+        }
+        if (source.summary.sourceDurationSeconds > MAX_TRANSLATED_SUBTITLE_SECONDS) {
+          blocked.push(blockBilibiliSubtitleCandidate(candidate, "Bilibili Chinese subtitles exceed 10-minute translation limit."));
+          continue;
+        }
+        const cachedTranslation = parsed?.id
+          ? await validTranslationForSource(parsed.id, candidate.subtitleTranslation, source.entries)
+          : null;
+        allowed.push({
+          ...candidate,
+          subtitleTracks,
+          subtitleEligibility: "chinese-needs-translation",
+          chineseSubtitleSource: source,
+          subtitleTranslation: cachedTranslation || undefined
+        });
         continue;
       }
       if (chineseTracks.length) {
@@ -567,7 +600,11 @@ async function classifyInBatches({ intent, candidates, config, batchSize }) {
 async function publicVideo(item) {
   const parsed = parseVideoUrl(item.url);
   const bvid = parsed?.platform === "bilibili" ? parsed.id : null;
-  const translation = bvid ? await translationForBvid(bvid, item.subtitleTranslation) : null;
+  const translation = bvid && item.subtitleEligibility === "chinese-needs-translation"
+    ? (item.chineseSubtitleSource?.entries?.length
+      ? await validTranslationForSource(bvid, item.subtitleTranslation, item.chineseSubtitleSource.entries)
+      : await validatedTranslationForBvid(bvid, item.subtitleTranslation))
+    : null;
   return {
     id: item.id,
     platform: item.platform,
@@ -584,7 +621,11 @@ async function publicVideo(item) {
 async function publicCachedVideo(item) {
   const parsed = parseVideoUrl(item.url);
   const bvid = parsed?.platform === "bilibili" ? parsed.id : null;
-  const translation = bvid ? await translationForBvid(bvid, item.subtitleTranslation) : item.subtitleTranslation;
+  const translation = bvid && (item.subtitleEligibility === "chinese-needs-translation" || item.subtitleTranslation?.entries?.length)
+    ? (isSelfValidatedTranslation(item.subtitleTranslation)
+      ? item.subtitleTranslation
+      : await validatedTranslationForBvid(bvid, item.subtitleTranslation))
+    : item.subtitleTranslation;
   return {
     ...item,
     thumbnail: item.platform === "bilibili" ? thumbnailProxyPath(item.thumbnail) || item.thumbnail : item.thumbnail,
@@ -594,6 +635,102 @@ async function publicCachedVideo(item) {
 
 async function translationForBvid(bvid, fallback = null) {
   return getCachedTranslation(bvid) || await readCachedTranslation(bvid) || fallback || null;
+}
+
+async function validatedTranslationForBvid(bvid, fallback = null) {
+  const source = await chineseSubtitleSourceForBvid(bvid).catch(() => null);
+  if (!source?.entries?.length) return translationForBvid(bvid, fallback);
+  return validTranslationForSource(bvid, fallback, source.entries);
+}
+
+async function validTranslationForSource(bvid, fallback, sourceEntries) {
+  const sourceSummary = subtitleSourceSummary(sourceEntries);
+  if (sourceSummary.sourceDurationSeconds > MAX_TRANSLATED_SUBTITLE_SECONDS) {
+    await deleteCachedTranslation(bvid);
+    return null;
+  }
+  const translation = await translationForBvid(bvid, fallback);
+  if (!translation?.entries?.length) return null;
+  const result = validateTranslationCoverage(translation, sourceEntries, sourceSummary);
+  if (!result.ok) {
+    await deleteCachedTranslation(bvid);
+    return null;
+  }
+  return translation;
+}
+
+export function validateTranslationCoverage(translation, sourceEntries, sourceSummary = subtitleSourceSummary(sourceEntries)) {
+  const entries = Array.isArray(translation?.entries) ? translation.entries : [];
+  if (!entries.length || !sourceEntries?.length) return { ok: false, reason: "missing entries" };
+  if (translation.sourceFingerprint && translation.sourceFingerprint !== sourceSummary.sourceFingerprint) {
+    return { ok: false, reason: "source fingerprint mismatch" };
+  }
+  const translatedSourceSummary = subtitleSourceSummary(entries);
+  if (!translation.sourceFingerprint && translatedSourceSummary.sourceFingerprint !== sourceSummary.sourceFingerprint) {
+    return { ok: false, reason: "source content mismatch" };
+  }
+  const entryCoverage = entries.length / sourceEntries.length;
+  const timelineCoverage = translatedSourceSummary.sourceLastTo / Math.max(1, sourceSummary.sourceLastTo);
+  if (entryCoverage < MIN_TRANSLATION_COVERAGE || timelineCoverage < MIN_TRANSLATION_COVERAGE) {
+    return { ok: false, reason: "translation coverage too low" };
+  }
+  return { ok: true };
+}
+
+export function subtitleSourceSummary(entries = []) {
+  const normalized = normalizeSubtitleEntries(entries);
+  const sourceLastTo = normalized.reduce((max, entry) => Math.max(max, Number(entry.to || 0)), 0);
+  const sourceFirstFrom = normalized.reduce((min, entry) => Math.min(min, Number(entry.from || 0)), Number.POSITIVE_INFINITY);
+  const sourceDurationSeconds = sourceLastTo - (Number.isFinite(sourceFirstFrom) ? sourceFirstFrom : 0);
+  return {
+    sourceFingerprint: subtitleSourceFingerprint(normalized),
+    sourceEntryCount: normalized.length,
+    sourceDurationSeconds,
+    sourceLastTo
+  };
+}
+
+function subtitleSourceFingerprint(entries = []) {
+  const hash = createHash("sha256");
+  for (const entry of normalizeSubtitleEntries(entries)) {
+    hash.update(`${entry.from}\t${entry.to}\t${entry.content}\n`);
+  }
+  return hash.digest("hex");
+}
+
+function normalizeSubtitleEntries(entries = []) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => ({
+      from: Number(entry?.from || 0),
+      to: Number(entry?.to || 0),
+      content: String(entry?.content || "").replace(/\s+/g, " ").trim()
+    }))
+    .filter((entry) => entry.content);
+}
+
+async function chineseSubtitleSourceFromTrack(track) {
+  const trackUrl = track?.subtitle_url || track?.url || "";
+  if (!trackUrl) return { entries: [], summary: subtitleSourceSummary([]) };
+  const subUrl = trackUrl.startsWith("//") ? `https:${trackUrl}` : trackUrl;
+  const body = await fetchBilibiliSubtitleJson(subUrl);
+  const entries = Array.isArray(body) ? body : [];
+  return { track, entries, summary: subtitleSourceSummary(entries) };
+}
+
+async function chineseSubtitleSourceForBvid(bvid) {
+  const tracks = await bilibiliSubtitleTracksForUrl(`https://www.bilibili.com/video/${bvid}`);
+  const track = chineseBilibiliSubtitleTracks(tracks).find((item) => item.subtitle_url || item.url);
+  return track ? chineseSubtitleSourceFromTrack(track) : null;
+}
+
+function isMusicNoSubtitles(item) {
+  return Array.isArray(item?.gate?.labels) && item.gate.labels.includes("music-no-subtitles");
+}
+
+function isSelfValidatedTranslation(translation) {
+  if (!translation?.sourceFingerprint || !translation?.entries?.length) return false;
+  if (Number(translation.sourceDurationSeconds || 0) > MAX_TRANSLATED_SUBTITLE_SECONDS) return false;
+  return validateTranslationCoverage(translation, translation.entries).ok;
 }
 
 function mergeSubtitleTrackLists(...trackLists) {
@@ -632,7 +769,9 @@ async function translatedReadySelection(selection) {
   for (const item of selection.items) {
     const parsed = parseVideoUrl(item.url || "");
     if (parsed?.platform === "bilibili" && item.subtitleEligibility === "chinese-needs-translation") {
-      const translation = await translationForBvid(parsed.id, item.subtitleTranslation);
+      const translation = item.chineseSubtitleSource?.entries?.length
+        ? await validTranslationForSource(parsed.id, item.subtitleTranslation, item.chineseSubtitleSource.entries)
+        : await validatedTranslationForBvid(parsed.id, item.subtitleTranslation);
       if (!translation?.entries?.length) {
         dropped.push(item);
         continue;
@@ -672,13 +811,14 @@ async function preTranslateChineseSubtitles(items, config, progress = () => {}) 
     const parsed = parseVideoUrl(item.url);
     if (!parsed?.id) continue;
     const bvid = parsed.id;
-    if (await translationForBvid(bvid)) {
+    if (item.chineseSubtitleSource?.entries?.length && await validTranslationForSource(bvid, item.subtitleTranslation, item.chineseSubtitleSource.entries)) {
       progress("translate", `Using cached subtitle translation for ${bvid}.`);
       continue;
     }
     try {
       progress("translate", `Downloading Chinese subtitles for ${bvid}.`);
       let cnTrack = chineseBilibiliSubtitleTracks(item.subtitleTracks || [])[0];
+      let entries = item.chineseSubtitleSource?.entries || null;
       if (!cnTrack) {
         const viewRes = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
         const cid = viewRes?.data?.cid;
@@ -688,15 +828,19 @@ async function preTranslateChineseSubtitles(items, config, progress = () => {}) 
         cnTrack = tracks.find(t => /zh|中文|Chinese/i.test(`${t.lan || ""} ${t.lan_doc || ""}`) && (t.subtitle_url || t.url));
       }
       if (!cnTrack) continue;
-      const trackUrl = cnTrack.subtitle_url || cnTrack.url;
-      const subUrl = trackUrl.startsWith("//") ? `https:${trackUrl}` : trackUrl;
-      const subData = await fetchJson(subUrl);
-      const entries = Array.isArray(subData?.body) ? subData.body : null;
+      if (!entries?.length) {
+        const trackUrl = cnTrack.subtitle_url || cnTrack.url;
+        const subUrl = trackUrl.startsWith("//") ? `https:${trackUrl}` : trackUrl;
+        const subData = await fetchJson(subUrl);
+        entries = Array.isArray(subData?.body) ? subData.body : null;
+      }
       if (!entries?.length) continue;
+      const sourceSummary = subtitleSourceSummary(entries);
+      if (sourceSummary.sourceDurationSeconds > MAX_TRANSLATED_SUBTITLE_SECONDS) continue;
       progress("translate", `Translating ${entries.length} subtitle line${entries.length === 1 ? "" : "s"} for ${bvid}.`);
       const translated = await translateSubtitleEntries(entries, config);
       if (translated?.length) {
-        await writeCachedTranslation(bvid, translated);
+        await writeCachedTranslation(bvid, translated, sourceSummary);
         progress("translate", `Cached subtitle translation for ${bvid}.`);
       }
     } catch (e) {
@@ -979,7 +1123,8 @@ function feedTargets(feedSize) {
 }
 
 function cachedFeedNeedsRefresh(cachedFeed = [], cachedSuggestions = [], feedSize = 20) {
-  if (cachedFeed.some((item) => item.platform === "bilibili" && item.subtitleEligibility === "chinese-needs-translation" && !item.subtitleTranslation?.entries?.length)) {
+  if (cachedFeed.some((item) => item.platform === "bilibili" && item.subtitleEligibility === "chinese-needs-translation" &&
+    (!item.subtitleTranslation?.entries?.length || !item.subtitleTranslation?.sourceFingerprint))) {
     return true;
   }
   const targets = feedTargets(feedSize);
